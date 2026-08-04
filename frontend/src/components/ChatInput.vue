@@ -29,9 +29,10 @@ function onKeydown(e: KeyboardEvent) {
 function submit() {
   const v = text.value.trim()
   if (!v || props.generating) return
-  emit('send', v)
+  // 先清空输入框，再触发发送，避免发送流程异常时文字残留
   text.value = ''
   autoResize()
+  emit('send', v)
 }
 </script>
 

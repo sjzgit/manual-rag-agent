@@ -1,7 +1,6 @@
 <script setup lang="ts">
-/** 来源引用卡片：chips 列表 → 点击弹窗预览原文 Markdown + 图片 */
 import MarkdownIt from 'markdown-it'
-import { BookOpen, X } from 'lucide-vue-next'
+import { BookOpen, ExternalLink, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import type { SourceChunk } from '../types'
 
@@ -9,114 +8,98 @@ const props = defineProps<{ sources: SourceChunk[] }>()
 
 const md = new MarkdownIt({ html: false, linkify: true })
 
-const activeSource = ref<SourceChunk | null>(null)
-const previewUrl = ref<string | null>(null)
-
 const items = computed(() => props.sources)
 
+const active = ref<SourceChunk | null>(null)
+const previewUrl = ref<string | null>(null)
+
 function open(chunk: SourceChunk) {
-  activeSource.value = chunk
+  active.value = chunk
 }
 
 function close() {
-  activeSource.value = null
+  active.value = null
   previewUrl.value = null
 }
 
 function render(content: string) {
   return md.render(content)
 }
+
+function onBodyClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (target.tagName === 'IMG') {
+    const src = (target as HTMLImageElement).getAttribute('src')
+    if (src) previewUrl.value = src
+  }
+}
 </script>
 
 <template>
   <div v-if="items.length" class="mt-3 border-t border-muted pt-2.5">
-    <div class="mb-1.5 flex items-center gap-1.5 text-[12px] text-ink-sub">
+    <div class="mb-2 flex items-center gap-1.5 text-[11px] font-medium text-ink-sub">
       <BookOpen :size="13" class="text-primary" />
-      <span>来源（{{ items.length }}）</span>
+      <span>来源原文（{{ items.length }}）</span>
+      <span class="ml-auto text-[10px] text-ink-sub/50">点击查看图文原文</span>
     </div>
 
-    <div class="flex flex-wrap gap-1.5">
+    <div class="flex flex-col gap-1.5">
       <button
         v-for="s in items"
         :key="s.chunk_id"
-        class="group flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-all duration-200 cursor-pointer border-muted bg-muted/60 text-ink-sub hover:border-primary/30 hover:text-primary hover:shadow-lift"
+        class="group flex cursor-pointer items-center gap-2 rounded-xl border border-muted bg-muted/40 px-3 py-2 text-left transition-all hover:border-primary/30 hover:bg-white"
         @click="open(s)"
       >
-        <span class="max-w-[280px] truncate">{{ s.doc }} &gt; {{ s.path }}</span>
-        <span class="text-[11px] opacity-70">{{ s.score.toFixed(2) }}</span>
-        <span class="ml-0.5 rounded bg-primary/10 px-1 py-0.5 text-[10px] text-primary opacity-0 transition-opacity group-hover:opacity-100">预览</span>
+        <span class="min-w-0 flex-1 truncate text-[12px] font-medium text-ink group-hover:text-primary">
+          {{ s.doc }} &gt; {{ s.path }}
+        </span>
+        <span class="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[11px] text-primary">
+          {{ (s.score * 100).toFixed(0) }}%
+        </span>
+        <ExternalLink :size="13" class="shrink-0 text-ink-sub/50 group-hover:text-primary" />
       </button>
     </div>
   </div>
 
-  <!-- 弹窗：引用原文预览 -->
+  <!-- 来源原文弹窗：点击后弹出，图文混排展示切片原文 -->
   <Teleport to="body">
     <div
-      v-if="activeSource"
-      class="fixed inset-0 z-50 flex items-center justify-center p-6"
+      v-if="active"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+      @click.self="close"
     >
-      <!-- 遮罩 -->
-      <div class="absolute inset-0 bg-black/40 backdrop-blur-sm" @click="close" />
-
-      <!-- 弹窗内容 -->
-      <div class="relative z-10 max-h-[80vh] w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <!-- 头部 -->
-        <div class="flex items-center gap-3 border-b border-muted px-5 py-3.5">
-          <div class="flex-1 min-w-0">
-            <div class="text-[14px] font-semibold text-ink truncate">
-              {{ activeSource.doc }}
-            </div>
-            <div class="text-[12px] text-ink-sub truncate">
-              {{ activeSource.path }} · 相关度 {{ (activeSource.score * 100).toFixed(0) }}%
-            </div>
+      <div class="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div class="flex items-center gap-2 border-b border-muted px-4 py-3">
+          <BookOpen :size="16" class="shrink-0 text-primary" />
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-[13px] font-semibold text-ink">{{ active.doc }}</div>
+            <div class="truncate text-[11px] text-ink-sub">{{ active.path }}</div>
           </div>
+          <span class="shrink-0 rounded bg-primary/10 px-2 py-0.5 text-[11px] text-primary">
+            相关度 {{ (active.score * 100).toFixed(0) }}%
+          </span>
           <button
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-ink-sub transition-colors hover:bg-muted hover:text-ink cursor-pointer"
+            class="cursor-pointer rounded-md p-1.5 text-ink-sub transition-colors hover:bg-muted hover:text-ink"
             @click="close"
           >
             <X :size="16" />
           </button>
         </div>
-
-        <!-- 正文 -->
-        <div class="overflow-y-auto px-5 py-4" style="max-height: calc(80vh - 60px)">
-          <div class="md-body text-[14px] leading-7" v-html="render(activeSource.content)" />
-
-          <!-- 图片网格 -->
-          <div v-if="activeSource.images.length" class="mt-4 border-t border-muted pt-4">
-            <div class="mb-2 text-[12px] font-medium text-ink-sub">
-              关联图片（{{ activeSource.images.length }}）
-            </div>
-            <div
-              class="grid gap-2"
-              :style="{ gridTemplateColumns: `repeat(${Math.min(activeSource.images.length, 3)}, minmax(0, 1fr))` }"
-            >
-              <button
-                v-for="(img, i) in activeSource.images"
-                :key="i"
-                class="group overflow-hidden rounded-lg border border-muted bg-white cursor-zoom-in transition-shadow hover:shadow-md"
-                @click="previewUrl = img"
-              >
-                <img
-                  :src="img"
-                  :alt="`截图 ${i + 1}`"
-                  class="h-24 w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                  loading="lazy"
-                />
-              </button>
-            </div>
-          </div>
+        <div class="overflow-y-auto px-4 py-3.5" @click="onBodyClick">
+          <div class="md-body text-[13px] leading-6" v-html="render(active.content)" />
         </div>
       </div>
+    </div>
+  </Teleport>
 
-      <!-- 图片放大预览 -->
-      <div
-        v-if="previewUrl"
-        class="absolute inset-0 z-20 flex items-center justify-center bg-black/70 backdrop-blur-sm cursor-zoom-out"
-        @click="previewUrl = null"
-      >
-        <img :src="previewUrl" class="max-h-[88vh] max-w-[92vw] rounded-xl shadow-2xl" />
-      </div>
+  <!-- 图片放大预览 -->
+  <Teleport to="body">
+    <div
+      v-if="previewUrl"
+      class="fixed inset-0 z-[60] flex cursor-zoom-out items-center justify-center bg-black/70 backdrop-blur-sm"
+      @click="previewUrl = null"
+    >
+      <img :src="previewUrl" class="max-h-[85vh] max-w-[90vw] rounded-xl shadow-2xl" />
     </div>
   </Teleport>
 </template>

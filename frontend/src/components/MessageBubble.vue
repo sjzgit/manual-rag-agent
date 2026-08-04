@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** 消息气泡：用户右 / AI 左，Markdown 渲染 + 步骤面板 + 来源卡片 + 澄清卡片 + 反馈条 */
 import MarkdownIt from 'markdown-it'
-import { ThumbsDown, ThumbsUp, User, ZoomIn } from 'lucide-vue-next'
+import { ThumbsDown, ThumbsUp, User } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import type { ChatMessage } from '../types'
 import ClarifyCard from './ClarifyCard.vue'
@@ -23,24 +23,16 @@ const rendered = computed(() => md.render(props.message.content || ''))
 const showCommentFor = ref<-1 | 0>(0)
 const comment = ref('')
 
-// 从 sources 中收集所有不重复的图片用于在正文区展示
-const sourceImages = computed(() => {
-  if (props.message.streaming || !props.message.sources?.length) return []
-  const seen = new Set<string>()
-  const result: { url: string; doc: string; path: string }[] = []
-  for (const s of props.message.sources) {
-    for (const img of s.images) {
-      if (!seen.has(img)) {
-        seen.add(img)
-        result.push({ url: img, doc: s.doc, path: s.path })
-      }
-    }
-  }
-  return result
-})
+// 回答正文中内联图片放大预览（事件委托）
+const previewUrl = ref<string | null>(null)
 
-// 图片放大预览
-const previewImage = ref<string | null>(null)
+function onBodyClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (target.tagName === 'IMG') {
+    const src = (target as HTMLImageElement).getAttribute('src')
+    if (src) previewUrl.value = src
+  }
+}
 
 function like() {
   emit('feedback', props.message, 1, '')
@@ -80,6 +72,7 @@ function submitDislike() {
           class="md-body"
           :class="{ 'stream-cursor': message.streaming }"
           v-html="rendered"
+          @click="onBodyClick"
         />
         <div v-if="message.streaming && !message.content" class="flex items-center gap-1.5 py-1">
           <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-primary/60" />
@@ -93,32 +86,6 @@ function submitDislike() {
           :disabled="generating"
           @submit="(a) => emit('clarifySubmit', a)"
         />
-
-        <!-- 来源截图展示 -->
-        <div v-if="sourceImages.length" class="mt-3 border-t border-muted pt-2.5">
-          <div class="mb-2 text-[11px] font-medium text-ink-sub">相关操作截图</div>
-          <div class="grid gap-2" :style="{ gridTemplateColumns: `repeat(${Math.min(sourceImages.length, 3)}, minmax(0, 1fr))` }">
-            <button
-              v-for="(img, i) in sourceImages"
-              :key="i"
-              class="group relative overflow-hidden rounded-lg border border-muted bg-white cursor-zoom-in shadow-sm transition-shadow hover:shadow-md"
-              @click="previewImage = img.url"
-            >
-              <img
-                :src="img.url"
-                :alt="`${img.doc} - ${img.path}`"
-                class="h-28 w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                loading="lazy"
-              />
-              <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 to-transparent p-1.5 opacity-0 transition-opacity group-hover:opacity-100">
-                <span class="text-[10px] text-white/90 truncate block">{{ img.doc }}</span>
-              </div>
-              <div class="absolute right-1.5 top-1.5 rounded-md bg-black/40 p-1 opacity-0 transition-opacity group-hover:opacity-100">
-                <ZoomIn :size="13" class="text-white" />
-              </div>
-            </button>
-          </div>
-        </div>
 
         <SourceCard v-if="!message.streaming" :sources="message.sources" />
       </div>
@@ -166,14 +133,14 @@ function submitDislike() {
     </div>
   </div>
 
-  <!-- 图片放大预览 -->
+  <!-- 回答正文内联图片放大预览 -->
   <Teleport to="body">
     <div
-      v-if="previewImage"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm cursor-zoom-out"
-      @click="previewImage = null"
+      v-if="previewUrl"
+      class="fixed inset-0 z-[60] flex cursor-zoom-out items-center justify-center bg-black/70 backdrop-blur-sm"
+      @click="previewUrl = null"
     >
-      <img :src="previewImage" class="max-h-[85vh] max-w-[90vw] rounded-xl shadow-2xl" />
+      <img :src="previewUrl" class="max-h-[85vh] max-w-[90vw] rounded-xl shadow-2xl" />
     </div>
   </Teleport>
 </template>

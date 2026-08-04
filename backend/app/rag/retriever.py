@@ -149,11 +149,17 @@ class ManualRetriever:
         )
 
     def build_context(self, hits: list[SearchResult]) -> str:
-        """拼接 LLM 上下文（含来源标注）。"""
+        """拼接 LLM 上下文（含来源标注）。
+
+        复用 to_source_chunk 的图片 URL 改写：切片中的 ![](./media/xxx.png)
+        原位替换为 /api/images/... 可用链接，让大模型在回答中能直接引用原文图片，
+        实现图文混排回答（避免回答里丢图/重排）。
+        """
         parts = []
         for i, h in enumerate(hits, 1):
+            chunk = self.to_source_chunk(h)
             parts.append(
-                f"【切片{i}】来源：{h.doc} > {h.path}（相似度 {h.score:.3f}）\n{h.content}"
+                f"【切片{i}】来源：{h.doc} > {h.path}（相似度 {h.score:.3f}）\n{chunk.content}"
             )
         return "\n\n".join(parts)
 
@@ -184,4 +190,5 @@ async def search_manual(
     if _retriever is None:
         raise RuntimeError("retriever 未初始化")
     hits = await _retriever.search(query, doc=doc, top_k=top_k)
-    return [h.model_dump() for h in hits]
+    # 返回改写图片 URL 后的原文，保证 Agent 也能把 /api/images/... 图片链接带进回答
+    return [_retriever.to_source_chunk(h).model_dump() for h in hits]

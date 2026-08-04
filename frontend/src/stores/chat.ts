@@ -58,73 +58,63 @@ export const useChatStore = defineStore('chat', () => {
       feedback: 0,
     })
 
-    const aiId = `a-${Date.now()}`
-    const aiMsg: ChatMessage = {
-      id: aiId,
+    messages.value.push({
+      id: `a-${Date.now()}`,
       role: 'assistant',
       content: '',
       steps: [],
       sources: [],
       streaming: true,
       feedback: 0,
-    }
-    messages.value.push(aiMsg)
+    })
+    // push 后立即从响应式数组中捕获该消息的 reactive proxy。
+    // 注意：不能通过 id 反复 find，因为 onMeta 会用服务端真实 id 覆盖本地 id，导致后续查找失效。
+    const aiMsg = messages.value[messages.value.length - 1]
     generating.value = true
     abortCtrl = new AbortController()
 
-    // 辅助函数：从响应式数组中获取 AI 消息的 reactive proxy
-    function getAIMsg(): ChatMessage | undefined {
-      return messages.value.find((m) => m.id === aiId)
+    try {
+      await streamChat(
+        {
+          session_id: currentSessionId.value,
+          question,
+          doc: docFilter.value,
+          clarify_answer: clarifyAnswer,
+        },
+        {
+          onMeta: (sid, mid) => {
+            currentSessionId.value = sid
+            aiMsg.id = mid
+          },
+          onStep: (s) => aiMsg.steps.push(s),
+          onClarify: (c) => {
+            aiMsg.clarify = c
+          },
+          onToken: (t) => {
+            aiMsg.content += t
+          },
+          onSources: (s) => {
+            aiMsg.sources = s
+          },
+          onDone: () => {
+            aiMsg.streaming = false
+          },
+          onError: (_code, msg) => {
+            aiMsg.content += `\n\n> 出错了：${msg}`
+            aiMsg.streaming = false
+          },
+        },
+        abortCtrl.signal,
+      )
+    } catch (e) {
+      console.error('聊天流异常', e)
+      aiMsg.content += '\n\n> 出错了：连接中断，请重试'
+    } finally {
+      // 无论成功/失败/中断，都必须复位生成状态，避免输入框永久禁用
+      aiMsg.streaming = false
+      generating.value = false
+      abortCtrl = null
     }
-
-    await streamChat(
-      {
-        session_id: currentSessionId.value,
-        question,
-        doc: docFilter.value,
-        clarify_answer: clarifyAnswer,
-      },
-      {
-        onMeta: (sid, mid) => {
-          currentSessionId.value = sid
-          const m = getAIMsg()
-          if (m) m.id = mid
-        },
-        onStep: (s) => {
-          const m = getAIMsg()
-          if (m) m.steps.push(s)
-        },
-        onClarify: (c) => {
-          const m = getAIMsg()
-          if (m) m.clarify = c
-        },
-        onToken: (t) => {
-          const m = getAIMsg()
-          if (m) m.content += t
-        },
-        onSources: (s) => {
-          const m = getAIMsg()
-          if (m) m.sources = s
-        },
-        onDone: () => {
-          const m = getAIMsg()
-          if (m) m.streaming = false
-        },
-        onError: (_code, msg) => {
-          const m = getAIMsg()
-          if (m) {
-            m.content += `\n\n> 出错了：${msg}`
-            m.streaming = false
-          }
-        },
-      },
-      abortCtrl.signal,
-    )
-
-    const finalMsg = getAIMsg()
-    if (finalMsg) finalMsg.streaming = false
-    generating.value = false
-    abortCtrl = null
     refreshSessions()
   }
 
