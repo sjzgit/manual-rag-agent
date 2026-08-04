@@ -1,0 +1,12 @@
+[
+  {"question": "学生如何进行签到签退？", "expect_doc": "上体附中系统操作手册", "expect_path_contains": "学生管理"},
+  {"question": "班牌端首页有哪些运动项目？", "expect_doc": "上体附中系统操作手册", "expect_path_contains": "首页"},
+  {"question": "大屏上如何新增运动项目？", "expect_doc": "上体附中系统操作手册", "expect_path_contains": "大屏"},
+  {"question": "系统的角色权限有哪些？", "expect_doc": "", "expect_path_contains": "角色权限"},
+  {"question": "如何新增会议室预约申请？", "expect_doc": "实验会议室预约操作手册", "expect_path_contains": "会议室门禁"},
+  {"question": "如何撤回预约并查看开门码？", "expect_doc": "实验会议室预约操作手册", "expect_path_contains": "会议室门禁"},
+  {"question": "Pc端如何上传和删除作品？", "expect_doc": "文创小铺操作手册", "expect_path_contains": "作品维护"},
+  {"question": "如何维护主题和标签？", "expect_doc": "文创小铺操作手册", "expect_path_contains": "主题维护"},
+  {"question": "学生在移动端怎么查看班级作品？", "expect_doc": "文创小铺操作手册", "expect_path_contains": "作品列表（学生）"},
+  {"question": "教职工在Pc端如何进行过程管理？", "expect_doc": "积点评价操作手册", "expect_path_contains": "过程管理（教职工）"}
+]

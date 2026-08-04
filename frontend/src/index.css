@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --primary: #3B5BFD;
+    --primary-light: #5B7CFF;
+    --primary-dark: #2E49D6;
+    --background: #F5F7FB;
+    --card: #FFFFFF;
+    --muted: #F0F3FA;
+    --ink: #1F2329;
+    --ink-sub: #646A73;
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-surface text-ink font-sans antialiased;
+    background-image:
+      radial-gradient(600px 300px at 85% -5%, rgba(91, 124, 255, 0.10), transparent),
+      radial-gradient(500px 260px at -5% 100%, rgba(59, 91, 253, 0.08), transparent);
+    background-attachment: fixed;
+  }
+}
+
+@layer components {
+  .glass {
+    @apply bg-white/70 backdrop-blur-xl border border-white/60 shadow-glass;
+  }
+}
+
+/* 流式打字光标 */
+.stream-cursor::after {
+  content: '▍';
+  margin-left: 2px;
+  color: var(--primary);
+  animation: blink 0.9s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.15; }
+}
+
+/* 消息进入 */
+.msg-enter {
+  animation: msg-in 0.28s ease both;
+}
+
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Markdown 内容排版 */
+.md-body {
+  @apply text-[14px] leading-7 text-ink;
+}
+.md-body h1, .md-body h2, .md-body h3 {
+  @apply font-semibold mt-4 mb-2;
+}
+.md-body h1 { @apply text-lg; }
+.md-body h2 { @apply text-base; }
+.md-body h3 { @apply text-[15px]; }
+.md-body p { @apply my-2; }
+.md-body ul { @apply list-disc pl-5 my-2; }
+.md-body ol { @apply list-decimal pl-5 my-2; }
+.md-body li { @apply my-1; }
+.md-body strong { @apply font-semibold; }
+.md-body table {
+  @apply w-full my-3 text-[13px] border-collapse;
+}
+.md-body th, .md-body td {
+  @apply border border-muted px-3 py-1.5 text-left;
+}
+.md-body th { @apply bg-muted font-medium; }
+.md-body code {
+  @apply bg-muted rounded px-1.5 py-0.5 text-[13px] text-primary-dark;
+}
+.md-body pre {
+  @apply bg-ink text-white/90 rounded-lg p-3 my-3 overflow-x-auto text-[13px];
+}
+.md-body pre code {
+  @apply bg-transparent text-inherit p-0;
+}
+.md-body img {
+  @apply rounded-lg my-2 max-w-full border border-muted;
+}
+.md-body blockquote {
+  @apply border-l-4 border-primary/30 pl-3 my-2 text-ink-sub;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { @apply bg-ink/15 rounded-full; }
+::-webkit-scrollbar-thumb:hover { @apply bg-ink/25; }
+::-webkit-scrollbar-track { background: transparent; }

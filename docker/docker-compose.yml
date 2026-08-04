@@ -1,0 +1,66 @@
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: manual-rag-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../backend/.env
+    environment:
+      MYSQL_HOST: mysql
+      REDIS_URL: redis://redis:6379/0
+      CHUNKS_PATH: /data/chunks/chunks.json
+      META_DATA_PATH: /data/chunks/meta_data.json
+      MEDIA_ROOT: /data/manuals
+    volumes:
+      # 只读挂载知识库数据（compose 位于 code/docker/，数据位于 操作手册RAG/）
+      - ../../文档切片:/data/chunks:ro
+      - ../../处理后的md手册文档:/data/manuals:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    container_name: manual-rag-web
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  mysql:
+    image: mysql:8.0
+    container_name: manual-rag-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-manual_rag_dev}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-manual_rag}
+      TZ: Asia/Shanghai
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ../sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: manual-rag-redis
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+  redis_data:
