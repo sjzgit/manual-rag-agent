@@ -2,21 +2,21 @@
 import uuid
 from collections.abc import AsyncGenerator
 
-from app.agent.manual_agent import ManualAnswerAgent
-from app.core.config import Settings
-from app.core.logging import get_logger
-from app.intent.models import ClarifyState, IntentBatch
-from app.intent.recognizer import IntentRecognizer
-from app.prompts.manual import (
+from ..agent.manual_agent import ManualAnswerAgent
+from ..core.config import Settings
+from ..core.logging import get_logger
+from ..intent.models import ClarifyState
+from ..intent.recognizer import IntentRecognizer
+from ..prompts.manual import (
     ANSWER_SYSTEM_PROMPT,
     CLARIFY_EXHAUSTED_PREFIX,
     IRRELEVANT_REPLY,
     NOT_FOUND_REPLY,
 )
-from app.rag.models import ChatRequest, SearchResult, SourceChunk
-from app.rag.retriever import ManualRetriever
-from app.services.session_service import SessionService
-from app.utils import sse
+from ..rag.models import ChatRequest, SearchResult, SourceChunk
+from ..rag.retriever import ManualRetriever
+from ..utils import sse
+from .session_service import SessionService
 
 logger = get_logger(__name__)
 
@@ -64,7 +64,7 @@ class ChatService:
             steps: list[dict] = []
             # 限流（Redis 不可用时直通）
             if self.redis:
-                from app.services.cache import RateLimitExceeded
+                from .cache import RateLimitExceeded
 
                 try:
                     await self.redis.check_rate_limit(session_id)

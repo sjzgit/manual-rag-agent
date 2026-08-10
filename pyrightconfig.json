@@ -1,0 +1,12 @@
+{
+  "include": ["backend"],
+  "exclude": ["**/__pycache__", "**/.venv", "**/venv", "**/.pytest_cache"],
+  "pythonVersion": "3.13",
+  "pythonPlatform": "All",
+  "typeCheckingMode": "basic",
+  "executionEnvironments": [
+    {
+      "root": "backend"
+    }
+  ]
+}

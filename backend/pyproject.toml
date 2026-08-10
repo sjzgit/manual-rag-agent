@@ -1,0 +1,82 @@
+[project]
+name = "operation-manual-rag-backend"
+version = "0.1.0"
+description = "操作手册 RAG 知识库系统 - 后端 API 服务"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.115,<0.116",
+    "uvicorn[standard]>=0.30,<0.31",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+    "pymilvus>=2.4,<2.5",
+    "sentence-transformers>=3.0,<4",
+    "agentscope>=2.0.5,<2.1",
+    "structlog>=24.1,<25",
+    "sqlalchemy[asyncio]>=2.0,<2.1",
+    "aiomysql>=0.2,<0.3",
+    "redis>=5.0,<6",
+    "httpx>=0.27,<0.28",
+    "pytest>=8.2,<9",
+    "pytest-asyncio>=0.23,<0.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.11",
+    "isort>=6",
+    "pyright>=1.1",
+]
+
+# ========================================
+# Ruff - Linter & Formatter 统一配置
+# ========================================
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["app"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (导入排序)
+    "N",    # pep8-naming (命名规范)
+    "UP",   # pyupgrade (语法升级)
+    "B",    # flake8-bugbear (常见错误)
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify (代码简化建议)
+    "RUF",  # Ruff 特有规则
+]
+ignore = [
+    "E501", # 行过长 (由 formatter 处理)
+    "B008", # 允许在函数参数中调用函数 (FastAPI Depends 需要)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+
+# ========================================
+# isort (与 Ruff I 规则一致，供独立使用)
+# ========================================
+[tool.isort]
+profile = "black"
+line_length = 100
+src_paths = ["app"]
+
+# ========================================
+# Pytest (迁移自 pytest.ini)
+# ========================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+
+# Pyright 详细配置见项目根目录 pyrightconfig.json

@@ -1,10 +1,118 @@
 {
-  "python.defaultInterpreterPath": "E:\\miniconda3\\python.exe",
-  "python.analysis.extraPaths": [
-    "./backend"
-  ],
+  // ========================================
+  // Python 后端 (backend/)
+  // ========================================
+
+  // Python 解释器路径
+  "python.defaultInterpreterPath": "E:\\miniconda3\\envs\\rag\\python.exe",
+
+  // Pylance 类型检查
   "python.analysis.typeCheckingMode": "basic",
   "python.analysis.autoImportCompletions": true,
-  "python.analysis.importFormat": "absolute",
-  "python.terminal.activateEnvironment": true
+  "python.analysis.diagnosticMode": "workspace",
+
+  // 搜索 Python 定义时包含 backend 目录
+  "python.analysis.extraPaths": ["${workspaceFolder}/backend"],
+
+  // 测试
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["backend"],
+  "python.testing.autoTestDiscoverOnSaveEnabled": true,
+
+  // Python 文件格式化配置
+  "[python]": {
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    },
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.tabSize": 4
+  },
+
+  // isort 导入排序 (配置来自 backend/pyproject.toml)
+  "isort.args": ["--settings-path=${workspaceFolder}/backend"],
+
+  // Ruff Lint & Format 配置
+  "ruff.organizeImports": true,
+  "ruff.lint.args": ["--config=${workspaceFolder}/backend/pyproject.toml"],
+  "ruff.format.args": ["--config=${workspaceFolder}/backend/pyproject.toml"],
+
+  // 忽略 lint 的范围
+  "ruff.lint.ignore": [],
+
+  // ========================================
+  // 前端 (frontend/)  Vue3 + Vite + TypeScript
+  // ========================================
+
+  // TypeScript 配置
+  "typescript.tsdk": "node_modules/typescript/lib",
+
+  "[typescript]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2
+  },
+
+  "[vue]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "Vue.volar",
+    "editor.tabSize": 2
+  },
+
+  "[javascript]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2
+  },
+
+  "[json][jsonc]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2
+  },
+
+  "[scss][css]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "editor.tabSize": 2
+  },
+
+  // Volar (Vue 3 官方推荐，替代 Vetur)
+  "volar.takeOverMode.enabled": false,
+
+  // ========================================
+  // 通用设置
+  // ========================================
+
+  // 自动生成 docstring 格式 (Google Style)
+  "autoDocstring.docstringFormat": "google",
+
+  // 排除搜索和文件监视的目录
+  "search.exclude": {
+    "**/__pycache__": true,
+    "**/.venv": true,
+    "**/*.pyc": true,
+    "**/.pytest_cache": true,
+    "**/node_modules": true,
+    "**/dist": true
+  },
+
+  "files.watcherExclude": {
+    "**/__pycache__/**": true,
+    "**/.venv/**": true,
+    "**/*.pyc": true,
+    "**/.pytest_cache/**": true,
+    "**/node_modules/**": true,
+    "**/dist/**": true
+  },
+
+  // 文件保存时自动行为
+  "files.autoSave": "afterDelay",
+  "files.autoSaveDelay": 1000,
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+
+  // 编辑器通用
+  "editor.rulers": [100],
+  "editor.bracketPairColorization.enabled": true,
+  "editor.guides.bracketPairs": "active"
 }
