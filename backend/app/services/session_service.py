@@ -64,6 +64,7 @@ class SessionService:
                     "role": r.role,
                     "content": r.content,
                     "sources": r.sources or [],
+                    "steps": r.steps or [],
                     "created_at": r.created_at.isoformat(),
                 }
                 for r in rows
@@ -76,6 +77,7 @@ class SessionService:
         role: str,
         content: str,
         sources: list | None = None,
+        steps: list | None = None,
     ) -> None:
         if not self.db.available:
             return
@@ -88,6 +90,7 @@ class SessionService:
                         role=role,
                         content=content,
                         sources=sources,
+                        steps=steps,
                     )
                 )
                 # 更新会话时间与标题（首条用户消息）

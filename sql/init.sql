@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS messages (
     role       VARCHAR(16) NOT NULL COMMENT '消息角色：user=用户提问，assistant=AI回答',
     content    TEXT        NOT NULL COMMENT '消息正文（assistant 消息为 Markdown，可含 /api/images/ 图片链接）',
     sources    JSON        NULL COMMENT 'AI回答的检索来源（SourceChunk JSON 数组：chunk_id/doc/path/score/content/images）',
+    steps      JSON        NULL COMMENT '思考过程步骤（StepEvent JSON 数组：type/title/detail），历史会话回看时展示',
     created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间（历史消息按此正序）',
     INDEX idx_session (session_id) COMMENT '按会话查询消息的索引'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='消息表';
@@ -42,7 +43,7 @@ CREATE TABLE IF NOT EXISTS feedbacks (
     id         INT         NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '反馈记录自增ID',
     message_id VARCHAR(64) NOT NULL COMMENT '被反馈的消息ID（逻辑外键，指向 messages.id）',
     score      INT         NOT NULL COMMENT '反馈分值：1=赞，-1=踩',
-    comment    TEXT        NOT NULL DEFAULT '' COMMENT '踩时的补充说明（可空）',
+    comment    TEXT        NOT NULL COMMENT '踩时的补充说明（无输入时为空串，默认值由应用层保证）',
     created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '反馈时间',
     INDEX idx_message (message_id) COMMENT '按消息查询反馈的索引'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='反馈表';

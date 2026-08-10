@@ -35,7 +35,7 @@ export const useChatStore = defineStore('chat', () => {
       id: r.id,
       role: r.role,
       content: r.content,
-      steps: [],
+      steps: r.steps ?? [],
       sources: r.sources ?? [],
       streaming: false,
       feedback: 0,

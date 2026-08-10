@@ -30,6 +30,7 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(16))  # user | assistant
     content: Mapped[str] = mapped_column(Text)
     sources: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    steps: Mapped[list | None] = mapped_column(JSON, nullable=True)  # 思考过程步骤（StepEvent JSON 数组）
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

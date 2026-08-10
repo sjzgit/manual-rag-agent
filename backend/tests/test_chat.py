@@ -159,3 +159,37 @@ async def test_clarify_max_rounds(service):
     )
     assert not any(e == "clarify" for e, _ in events)
     assert any(e == "token" for e, _ in events)
+
+
+@pytest.mark.asyncio
+async def test_steps_persisted(service):
+    """思考过程步骤应随 assistant 消息持久化，供历史会话回看展示（含澄清/拒答之外的主流程）。"""
+    svc, recognizer, _ = service
+    from app.intent.models import IntentBatch
+
+    sessions = MagicMock()
+    sessions.ensure_session = AsyncMock()
+    sessions.save_message = AsyncMock()
+    sessions.log_intents = AsyncMock()
+    sessions.log_retrievals = AsyncMock()
+    sessions.get_clarify_state = AsyncMock(return_value=None)
+    sessions.save_clarify_state = AsyncMock()
+    sessions.get_messages = AsyncMock(return_value=[])
+    svc.sessions = sessions
+
+    recognizer.recognize = AsyncMock(
+        return_value=IntentBatch(intents=[make_intent()], used_llm=False)
+    )
+    await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
+
+    assistant_calls = [
+        c for c in sessions.save_message.await_args_list if c.args[2] == "assistant"
+    ]
+    assert assistant_calls, "assistant 消息应被持久化"
+    call = assistant_calls[-1]
+    assert call.args[3]  # content 非空
+    assert call.args[4]  # sources 同步持久化
+    step_types = [s["type"] for s in call.kwargs["steps"]]
+    assert "intent" in step_types
+    assert "retrieve" in step_types
+    assert "thinking" in step_types

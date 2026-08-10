@@ -1,0 +1,10 @@
+{
+  "python.defaultInterpreterPath": "E:\\miniconda3\\python.exe",
+  "python.analysis.extraPaths": [
+    "./backend"
+  ],
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.autoImportCompletions": true,
+  "python.analysis.importFormat": "absolute",
+  "python.terminal.activateEnvironment": true
+}

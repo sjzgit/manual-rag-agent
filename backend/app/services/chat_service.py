@@ -24,6 +24,14 @@ logger = get_logger(__name__)
 _clarify_states: dict[str, ClarifyState] = {}
 
 
+def _step_payload(
+    steps: list[dict], step_type: str, title: str, detail: dict | None = None
+) -> str:
+    """记录思考过程步骤，并生成对应 SSE step 事件（供流式推送 + 历史会话回看）。"""
+    steps.append({"type": step_type, "title": title, "detail": detail or {}})
+    return sse.step(step_type, title, detail)
+
+
 class ChatService:
     def __init__(
         self,
@@ -52,6 +60,8 @@ class ChatService:
         yield sse.sse_event("meta", {"session_id": session_id, "message_id": message_id})
 
         try:
+            # 思考过程步骤收集（随 assistant 消息持久化，供历史会话回看）
+            steps: list[dict] = []
             # 限流（Redis 不可用时直通）
             if self.redis:
                 from app.services.cache import RateLimitExceeded
@@ -79,10 +89,15 @@ class ChatService:
                     uuid.uuid4().hex, session_id, "user", req.clarify_answer or req.question
                 )
 
-            # 1) 意图识别
-            yield sse.step("intent", "意图识别中…")
-            batch = await self.recognizer.recognize(question)
-            yield sse.step(
+            # 1) 意图识别（结合会话上下文：指代/承接性提问根据历史补全模块）
+            yield _step_payload(steps, "intent", "意图识别中…")
+            history = await self._history(session_id)
+            # 刚保存的当前输入不视为"历史"，移除避免自我参照
+            if history and history[-1]["role"] == "user":
+                history = history[:-1]
+            batch = await self.recognizer.recognize(question, history=history)
+            yield _step_payload(
+                steps,
                 "intent",
                 "意图识别完成",
                 {
@@ -97,7 +112,7 @@ class ChatService:
             if batch.has_irrelevant:
                 yield sse.token(IRRELEVANT_REPLY)
                 await self._set_clarify_state(session_id, None)
-                await self._save_assistant(session_id, message_id, IRRELEVANT_REPLY, None)
+                await self._save_assistant(session_id, message_id, IRRELEVANT_REPLY, None, steps)
                 yield sse.done(message_id)
                 return
 
@@ -108,12 +123,12 @@ class ChatService:
 
                 if state.round >= self.settings.max_clarify_rounds:
                     # 超限：按最相关切片直接回答
-                    yield sse.step(
-                        "intent", f"澄清超过 {state.round} 轮，按最相关切片回答"
+                    yield _step_payload(
+                        steps, "intent", f"澄清超过 {state.round} 轮，按最相关切片回答"
                     )
                     await self._set_clarify_state(session_id, None)
                     async for chunk in self._answer_flow(
-                        session_id, question, vague, req.doc, message_id,
+                        session_id, question, vague, req.doc, message_id, steps=steps,
                         prefix=CLARIFY_EXHAUSTED_PREFIX,
                     ):
                         yield chunk
@@ -127,14 +142,14 @@ class ChatService:
                 yield sse.clarify(
                     question_text, missing, [i.model_dump() for i in vague]
                 )
-                await self._save_assistant(session_id, message_id, question_text, None)
+                await self._save_assistant(session_id, message_id, question_text, None, steps)
                 yield sse.done(message_id)
                 return
 
             # 4) 全部精确 → 检索 + 回答
             await self._set_clarify_state(session_id, None)
             async for chunk in self._answer_flow(
-                session_id, question, batch.precise_intents, req.doc, message_id
+                session_id, question, batch.precise_intents, req.doc, message_id, steps=steps
             ):
                 yield chunk
 
@@ -151,17 +166,19 @@ class ChatService:
         intents,
         doc_filter: str | None,
         message_id: str,
+        steps: list[dict],
         prefix: str = "",
     ) -> AsyncGenerator[str, None]:
         # 逐子问题检索（top_k=2）
-        yield sse.step("retrieve", "向量检索中…")
+        yield _step_payload(steps, "retrieve", "向量检索中…")
         all_hits: list[SearchResult] = []
         seen: set[str] = set()
         for intent in intents:
             q = intent.simple_input or intent.input
             hits = await self.retriever.search(q, doc=doc_filter)
             hits = self.retriever.filter_by_threshold(hits)
-            yield sse.step(
+            yield _step_payload(
+                steps,
                 "retrieve",
                 f"检索「{q}」",
                 {
@@ -182,19 +199,19 @@ class ChatService:
         # 无命中 → 未找到
         if not all_hits:
             yield sse.token(NOT_FOUND_REPLY)
-            await self._save_assistant(session_id, message_id, NOT_FOUND_REPLY, None)
+            await self._save_assistant(session_id, message_id, NOT_FOUND_REPLY, None, steps)
             yield sse.done(message_id)
             return
 
         # LLM 流式生成
-        yield sse.step("thinking", "生成回答中…")
+        yield _step_payload(steps, "thinking", "生成回答中…")
         full_text = prefix
         if prefix:
             yield sse.token(prefix)
 
         if self.agentic is not None:
             # Agentic 模式：Agent 自主调用 search_manual 工具
-            yield sse.step("tool_call", "Agent 自主检索模式")
+            yield _step_payload(steps, "tool_call", "Agent 自主检索模式")
             history = await self._history(session_id)
             async for text in self.agentic.stream_answer(question, history):
                 full_text += text
@@ -213,7 +230,7 @@ class ChatService:
             self.retriever.to_source_chunk(h) for h in all_hits
         ]
         source_dicts = [s.model_dump() for s in source_chunks]
-        await self._save_assistant(session_id, message_id, full_text, source_dicts)
+        await self._save_assistant(session_id, message_id, full_text, source_dicts, steps)
         yield sse.sources(source_dicts)
         yield sse.done(message_id)
 
@@ -237,11 +254,16 @@ class ChatService:
             await self.sessions.save_clarify_state(session_id, state)
 
     async def _save_assistant(
-        self, session_id: str, message_id: str, content: str, sources: list | None
+        self,
+        session_id: str,
+        message_id: str,
+        content: str,
+        sources: list | None,
+        steps: list | None = None,
     ) -> None:
         if self.sessions:
             await self.sessions.save_message(
-                message_id, session_id, "assistant", content, sources
+                message_id, session_id, "assistant", content, sources, steps=steps
             )
 
     async def _history(self, session_id: str) -> list[dict]:
