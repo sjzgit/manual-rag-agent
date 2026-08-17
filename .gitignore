@@ -1,0 +1,21 @@
+# ---- 密钥/环境配置（.env.example 模板保留可提交） ----
+.env
+*.env
+!.env.example
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# ---- Node / 前端构建 ----
+node_modules/
+dist/
+
+# ---- IDE / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
