@@ -7,15 +7,16 @@ IntentType = Literal["irrelevant", "precise", "vague"]
 
 
 class IntentResult(BaseModel):
-    """单个子问题的意图识别结果。"""
+    """单个子问题的意图识别结果（纯 Prompt 生成，不做切片匹配，收录与否由向量检索决定）。"""
 
     input: str  # 原始（子）问题
-    simple_input: str = ""  # 优化后的精简问题
+    simple_input: str = ""  # 去寒暄、结合上下文补全后的检索问题
     module: str = ""  # 功能模块名称或系统名称
     role: str = ""  # 用户角色
     description: str = ""  # 功能点描述
-    chunk_id_list: list[str] = Field(default_factory=list)  # meta_data 匹配的切片
     intent_type: IntentType = "vague"
+    missing_fields: list[str] = Field(default_factory=list)  # vague 时缺失的要素(module/role/description)
+    clarify_question: str = ""  # vague 时 LLM 生成的澄清问题
     intent_reason: str = ""
 
 

@@ -39,7 +39,6 @@ class Settings(BaseSettings):
 
     # ---- 数据文件（只读） ----
     chunks_path: str = str(PROJECT_ROOT / "文档切片" / "chunks.json")
-    meta_data_path: str = str(PROJECT_ROOT / "文档切片" / "meta_data.json")
     media_root: str = str(PROJECT_ROOT / "处理后的md手册文档")
 
     # ---- 主 LLM（DeepSeek，OpenAI 兼容可切换） ----

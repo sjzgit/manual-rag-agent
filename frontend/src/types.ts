@@ -6,8 +6,9 @@ export interface IntentResult {
   module: string
   role: string
   description: string
-  chunk_id_list: string[]
   intent_type: 'irrelevant' | 'precise' | 'vague'
+  missing_fields: string[]
+  clarify_question: string
   intent_reason: string
 }
 

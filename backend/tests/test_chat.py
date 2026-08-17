@@ -3,7 +3,6 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from app.core.config import get_settings
 from app.intent.models import IntentResult
 from app.rag.models import ChatRequest, SearchResult, SourceChunk
@@ -109,7 +108,7 @@ async def test_clarify_flow(service):
     # 第一轮：模糊 → clarify 事件
     recognizer.recognize = AsyncMock(
         return_value=IntentBatch(
-            intents=[make_intent("vague", module="", chunk_id_list=["a", "b"])],
+            intents=[make_intent("vague", module="")],
             used_llm=False,
         )
     )
@@ -140,7 +139,7 @@ async def test_clarify_max_rounds(service):
 
     recognizer.recognize = AsyncMock(
         return_value=IntentBatch(
-            intents=[make_intent("vague", chunk_id_list=["a"])], used_llm=False
+            intents=[make_intent("vague")], used_llm=False
         )
     )
     sid = "s-max"

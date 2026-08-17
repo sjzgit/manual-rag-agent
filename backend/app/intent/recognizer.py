@@ -1,43 +1,40 @@
-"""意图识别：小模型（OpenAI 兼容）+ meta_data 关键词匹配；未配置时规则降级。"""
-import asyncio
+"""意图识别：独立小模型（OpenAI 兼容）基于 Prompt 直接识别；未配置时规则降级。
+
+LLM 输出 JSON 后的校验流程（见 chat/意图识别/改为prompt.md）：
+代码校验格式 → 不正确先尝试修复 → 仍不正确用 Prompt 重试一次 →
+第二次仍不正确则判定为 vague，友好提示用户补充详细信息。
+"""
 import json
 import re
-from pathlib import Path
 
 import httpx
 
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.intent.models import IntentBatch, IntentResult
-from app.prompts.intent import CLARIFY_SYSTEM_PROMPT, INTENT_SYSTEM_PROMPT
+from app.prompts.intent import INTENT_SYSTEM_PROMPT
 
 logger = get_logger(__name__)
+
+_VALID_INTENT_TYPES = ("irrelevant", "precise", "vague")
+_VALID_MISSING_FIELDS = ("module", "role", "description")
+
+# LLM 输出两次解析均失败时的兜底澄清话术（判 vague，不阻断对话）
+_PARSE_FAILED_CLARIFY = (
+    "抱歉，我暂时没能准确理解您的问题。"
+    "请补充说明您想查询的系统或功能模块，以及具体想进行的操作，"
+    "例如「实验会议室预约：如何审批申请」。"
+)
 
 
 class IntentRecognizer:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self._meta_index: list[dict] = []
-        self._meta_json_str: str = "[]"
 
     # ---------- 生命周期 ----------
 
     async def startup(self) -> None:
-        await asyncio.to_thread(self._load_meta)
-
-    def _load_meta(self) -> None:
-        meta_file = Path(self.settings.meta_data_path)
-        if meta_file.exists():
-            self._meta_index = json.loads(meta_file.read_text(encoding="utf-8"))
-            # 注入 prompt 用的精简索引
-            compact = [
-                {"id": m["id"], "doc": m["doc"], "path": m["path"], "keywords": m["keywords"]}
-                for m in self._meta_index
-            ]
-            self._meta_json_str = json.dumps(compact, ensure_ascii=False, indent=1)
-            logger.info("meta_data_loaded", count=len(self._meta_index))
-        else:
-            logger.warning("meta_data_missing", path=str(meta_file))
+        """意图识别已改为纯 Prompt 驱动，无外部索引需要加载；保留钩子供 lifespan 调用。"""
 
     # ---------- 主入口 ----------
 
@@ -53,31 +50,19 @@ class IntentRecognizer:
                 依据历史最近确定的模块补全，避免误判为无关或模糊。
         """
         if self.settings.intent_llm_configured:
-            try:
-                return await self._recognize_by_llm(question, history=history)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("intent_llm_failed_fallback_rules", error=str(e))
+            return await self._recognize_by_llm(question, history=history)
         return self._recognize_by_rules(question, history=history)
 
     async def generate_clarify_question(self, intents: list[IntentResult]) -> str:
-        """根据模糊意图生成追问内容。"""
-        fallback = self._template_clarify(intents)
-        if not self.settings.intent_llm_configured:
-            return fallback
-        try:
-            intents_json = json.dumps(
-                [i.model_dump() for i in intents], ensure_ascii=False, indent=1
-            )
-            text = await self._chat(
-                CLARIFY_SYSTEM_PROMPT.format(intents=intents_json),
-                "请生成追问。",
-                max_tokens=200,
-            )
-            text = (text or "").strip()
-            return text if text else fallback
-        except Exception as e:  # noqa: BLE001
-            logger.warning("clarify_llm_failed", error=str(e))
-            return fallback
+        """根据模糊意图生成追问内容。
+
+        新 Prompt 已要求 vague 时直接输出 clarify_question，优先使用；
+        缺失时（如规则降级路径）用模板兜底，不再二次调用 LLM。
+        """
+        questions = [i.clarify_question.strip() for i in intents if i.clarify_question.strip()]
+        if questions:
+            return "\n".join(questions)
+        return self._template_clarify(intents)
 
     # ---------- 小模型路径 ----------
 
@@ -85,11 +70,37 @@ class IntentRecognizer:
         self, question: str, history: list[dict] | None = None
     ) -> IntentBatch:
         """LLM 识别意图。history 作为多轮消息注入，让模型结合上下文
-        补全指代（如"那审批流程呢"）与省略的模块要素。"""
-        system = INTENT_SYSTEM_PROMPT.format(meta_data=self._meta_json_str)
-        raw = await self._chat(system, question, json_mode=True, history=history)
-        intents = self._parse_intents(raw, question)
-        return IntentBatch(intents=intents, used_llm=True)
+        补全指代（如"那审批流程呢"）与省略的模块要素。
+
+        输出校验：解析（含修复）失败 → Prompt 重试一次 → 仍失败判 vague 友好提示。
+        """
+        last_error = ""
+        for attempt in (1, 2):
+            raw = await self._chat(
+                INTENT_SYSTEM_PROMPT, question, json_mode=True, history=history
+            )
+            try:
+                intents = self._parse_intents(raw, question)
+                return IntentBatch(intents=intents, used_llm=True)
+            except ValueError as e:
+                last_error = str(e)
+                logger.warning(
+                    "intent_json_invalid", attempt=attempt, error=last_error, raw=raw[:200]
+                )
+        logger.warning("intent_json_retry_exhausted", question=question[:100])
+        return IntentBatch(
+            intents=[
+                IntentResult(
+                    input=question,
+                    simple_input=question,
+                    intent_type="vague",
+                    missing_fields=["module", "description"],
+                    clarify_question=_PARSE_FAILED_CLARIFY,
+                    intent_reason=f"意图识别输出两次均无法解析（{last_error}），转澄清",
+                )
+            ],
+            used_llm=True,
+        )
 
     async def _chat(
         self,
@@ -130,144 +141,166 @@ class IntentRecognizer:
         return data["choices"][0]["message"]["content"] or ""
 
     def _parse_intents(self, raw: str, question: str) -> list[IntentResult]:
-        """解析小模型 JSON 输出，带容错兜底。"""
-        text = raw.strip()
-        # 去除可能的 markdown 代码块包裹
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
-            text = m.group(0)
-        try:
-            data = json.loads(text)
-            items = data.get("intents", [])
-            valid_ids = {m["id"] for m in self._meta_index}
-            results = []
-            for item in items:
-                ids = [i for i in item.get("chunk_id_list", []) if i in valid_ids]
-                intent_type = item.get("intent_type", "vague")
-                if intent_type not in ("irrelevant", "precise", "vague"):
-                    intent_type = "vague"
-                results.append(
-                    IntentResult(
-                        input=item.get("input", question),
-                        simple_input=item.get("simple_input", question),
-                        module=item.get("module", "") or "",
-                        role=item.get("role", "") or "",
-                        description=item.get("description", "") or "",
-                        chunk_id_list=ids,
-                        intent_type=intent_type,
-                        intent_reason=item.get("intent_reason", "") or "",
-                    )
+        """校验并解析小模型 JSON 输出；无法解析时抛 ValueError（由上层重试）。"""
+        data = self._load_json(raw)
+        items = data.get("intents") if isinstance(data, dict) else None
+        if not isinstance(items, list) or not items:
+            raise ValueError("输出缺少非空 intents 数组")
+        results = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("intents 元素不是 JSON 对象")
+            intent_type = item.get("intent_type")
+            if intent_type not in _VALID_INTENT_TYPES:
+                intent_type = "vague"
+            missing = [
+                f for f in item.get("missing_fields", []) or [] if f in _VALID_MISSING_FIELDS
+            ]
+            results.append(
+                IntentResult(
+                    input=item.get("input") or question,
+                    simple_input=item.get("simple_input") or question,
+                    module=item.get("module") or "",
+                    role=item.get("role") or "",
+                    description=item.get("description") or "",
+                    intent_type=intent_type,
+                    missing_fields=missing,
+                    clarify_question=(item.get("clarify_question") or "").strip(),
+                    intent_reason=item.get("intent_reason") or "",
                 )
-            if results:
-                return results
-        except (json.JSONDecodeError, AttributeError, TypeError) as e:
-            logger.warning("intent_json_parse_failed", error=str(e), raw=raw[:200])
-        # 解析失败：整体降级为模糊，触发澄清
-        return [
-            IntentResult(
-                input=question,
-                simple_input=question,
-                intent_type="vague",
-                intent_reason="意图解析失败，需用户补充说明",
             )
-        ]
+        return results
 
-    # ---------- 规则降级路径 ----------
+    @staticmethod
+    def _load_json(raw: str) -> dict:
+        """提取并修复 JSON：剥离 markdown 代码块与杂质文本、截取最外层对象、去尾逗号。"""
+        text = raw.strip()
+        fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+        if fence:
+            text = fence.group(1).strip()
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start:
+            raise ValueError("输出中未找到 JSON 对象")
+        text = text[start : end + 1]
+        text = re.sub(r",\s*([}\]])", r"\1", text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"JSON 解析失败: {e}") from e
+
+    # ---------- 规则降级路径（小模型未配置时） ----------
 
     # 历史注入限制
     _HISTORY_LIMIT = 6  # 最多注入最近 6 条历史消息
     _HISTORY_MAX_CHARS = 500  # 单条历史截断长度
-    # 闲聊/礼貌语（承接判断时排除，避免把寒暄误判为上下文追问）
+    # 闲聊/礼貌语（此类输入即使有历史模块上下文，也不强行继承，保持拒答）
     _CHITCHAT_WORDS = (
         "你好", "您好", "你好呀", "嗨", "hello", "hi",
         "谢谢", "感谢", "辛苦了", "再见", "拜拜", "在吗", "好的", "嗯嗯", "收到",
     )
+    # 与操作手册明显无关的领域词（规则路径无关键词索引，靠词表保守拒答）
+    _IRRELEVANT_WORDS = (
+        "天气", "新闻", "股票", "基金", "理财", "笑话", "讲个故事", "写作文", "作文",
+        "数学题", "脑筋急转弯", "明星", "电影", "电视剧", "菜谱", "做菜", "感冒", "生病",
+        "医疗建议", "写诗", "写代码", "编程",
+    )
+    # 承接/指代特征词：无历史模块可补全时应澄清而非拒答
+    _FOLLOWUP_WORDS = (
+        "那", "这个", "那个", "它", "该", "下一步", "然后", "接着", "继续", "上面", "刚才", "前面",
+    )
+    # 从历史文本提取功能模块名：「实验会议室预约操作手册」「上体附中系统」→ 模块核心名
+    _MODULE_PATTERN = re.compile(r"([一-龥A-Za-z0-9]{2,24}?)(?:操作手册|系统)")
 
     def _recognize_by_rules(
         self, question: str, history: list[dict] | None = None
     ) -> IntentBatch:
-        """关键词重叠度匹配 meta_data；命中多则模糊，未命中且不相关词则拒答。
+        """规则降级：无关键词索引可用，仅按输入形态保守分类，
+        是否收录交由向量检索决定（与新 Prompt 的判定哲学一致）。
 
-        结合会话历史增强：
-        1. 当前输入未命中任何关键词，但历史已确定模块上下文且当前是承接性提问
-           （非闲聊）时，用历史模块补全，判 precise 而非拒答；
-        2. 多个候选同分（vague）时，用历史模块加权消歧。
+        - 空输入/闲聊/明显无关领域词 → irrelevant；
+        - 模糊指代（"这个怎么审核"）且历史无法补全模块 → vague 澄清；
+        - 承接性提问且历史能提取模块 → 补全 module 后判 precise；
+        - 其余形态像操作问题 → precise，由检索结果兜底"未找到"。
         """
         q = question.strip()
         if not q:
             return IntentBatch(
-                intents=[IntentResult(input=q, intent_type="irrelevant", intent_reason="空输入")],
+                intents=[
+                    IntentResult(input=q, intent_type="irrelevant", intent_reason="空输入")
+                ],
+                used_llm=False,
+            )
+        if self._looks_like_chitchat(q):
+            return IntentBatch(
+                intents=[
+                    IntentResult(
+                        input=q, intent_type="irrelevant", intent_reason="闲聊或礼貌用语"
+                    )
+                ],
                 used_llm=False,
             )
 
         context_module = self._infer_context_module(history)
-        scored = self._score(q)
+        if context_module:
+            # 承接场景：历史已确定模块，当前输入按该模块补全
+            return IntentBatch(
+                intents=[
+                    IntentResult(
+                        input=q,
+                        simple_input=f"{context_module}：{q}",
+                        module=context_module,
+                        description=q,
+                        intent_type="precise",
+                        intent_reason=f"结合会话历史模块「{context_module}」补全上下文",
+                    )
+                ],
+                used_llm=False,
+            )
 
-        if not scored:
-            # 承接场景：当前输入无关键词，但历史有模块上下文，且不是闲聊
-            if context_module and not self._looks_like_chitchat(q):
-                metas = [m for m in self._meta_index if m["doc"] == context_module]
-                intent = IntentResult(
+        if any(w in q for w in self._IRRELEVANT_WORDS):
+            return IntentBatch(
+                intents=[
+                    IntentResult(
+                        input=q,
+                        intent_type="irrelevant",
+                        intent_reason="问题与操作手册领域明显无关",
+                    )
+                ],
+                used_llm=False,
+            )
+
+        if any(w in q for w in self._FOLLOWUP_WORDS):
+            # 模糊指代且无历史可补全：澄清而非拒答
+            return IntentBatch(
+                intents=[
+                    IntentResult(
+                        input=q,
+                        intent_type="vague",
+                        missing_fields=["module"],
+                        clarify_question="请问您想咨询哪个系统或功能模块？（可直接补充完整问题）",
+                        intent_reason="模糊指代且会话历史无法补全模块",
+                    )
+                ],
+                used_llm=False,
+            )
+
+        return IntentBatch(
+            intents=[
+                IntentResult(
                     input=q,
-                    simple_input=f"{context_module}：{q}",
-                    module=context_module,
-                    description=q,
-                    chunk_id_list=[m["id"] for m in metas],
                     intent_type="precise",
-                    intent_reason=f"结合会话历史模块「{context_module}」补全上下文",
+                    intent_reason="问题具备模块与操作描述，交由向量检索确认是否收录",
                 )
-                return IntentBatch(intents=[intent], used_llm=False)
-            intent_type = "irrelevant"
-            reason = "问题与手册知识库无关键词匹配"
-        else:
-            # 上下文消歧：给历史模块相关候选加权，打破同分
-            if context_module:
-                scored = [
-                    (score + 3, meta)
-                    if meta["doc"] == context_module
-                    else (score, meta)
-                    for score, meta in scored
-                ]
-                scored.sort(key=lambda x: x[0], reverse=True)
-            if len(scored) == 1 or scored[0][0] > scored[1][0]:
-                intent_type = "precise"
-                reason = "关键词唯一匹配切片"
-            else:
-                intent_type = "vague"
-                reason = "关键词匹配多个切片，无法区分"
-
-        top = scored[:2] if scored else []
-        intent = IntentResult(
-            input=q,
-            simple_input=q,
-            module=top[0][1]["doc"] if top else "",
-            description=q,
-            chunk_id_list=[m["id"] for _, m in top],
-            intent_type=intent_type,
-            intent_reason=reason,
+            ],
+            used_llm=False,
         )
-        return IntentBatch(intents=[intent], used_llm=False)
-
-    def _score(self, q: str) -> list[tuple[int, dict]]:
-        """关键词重叠度打分：关键词命中权重 2，手册名/路径段命中权重 1。"""
-        scored: list[tuple[int, dict]] = []
-        for meta in self._meta_index:
-            score = sum(2 for kw in meta.get("keywords", []) if kw and kw in q)
-            tokens = [meta.get("doc", "")] + [
-                t.strip() for t in meta.get("path", "").split(">")
-            ]
-            score += sum(1 for t in tokens if t and len(t) >= 2 and t in q)
-            if score > 0:
-                scored.append((score, meta))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return scored
 
     def _infer_context_module(self, history: list[dict] | None) -> str | None:
-        """从会话历史推断最近一次确定的模块（手册 doc 名）。
+        """从会话历史文本提取最近提及的功能模块名。
 
-        倒序扫描最近消息，对每条消息按关键词（权重 2）/完整手册名（权重 3）/
-        手册核心名（去"操作手册"后缀，权重 2）累加各 doc 得分，取最近命中的 doc。
-        用户习惯说"实验室预约"而非全名"实验会议室预约操作手册"，故做核心名匹配。
+        倒序扫描历史消息，用模式「xx操作手册」「xx系统」提取模块核心名
+        （如"实验会议室预约操作手册"→"实验会议室预约"，"上体附中系统"→"上体附中"），
+        用于承接性提问补全。
         """
         if not history:
             return None
@@ -275,20 +308,9 @@ class IntentRecognizer:
             content = (msg.get("content") or "").strip()
             if not content:
                 continue
-            doc_scores: dict[str, int] = {}
-            for meta in self._meta_index:
-                doc = meta.get("doc", "")
-                score = sum(2 for kw in meta.get("keywords", []) if kw and kw in content)
-                if doc:
-                    doc_core = doc.replace("操作手册", "").strip()
-                    if doc in content:
-                        score += 3
-                    elif doc_core and len(doc_core) >= 2 and doc_core in content:
-                        score += 2
-                if score > 0:
-                    doc_scores[doc] = doc_scores.get(doc, 0) + score
-            if doc_scores:
-                return max(doc_scores, key=doc_scores.get)
+            m = self._MODULE_PATTERN.search(content)
+            if m:
+                return m.group(1)
         return None
 
     @classmethod
@@ -300,13 +322,21 @@ class IntentRecognizer:
         return any(w in qq for w in cls._CHITCHAT_WORDS)
 
     def _template_clarify(self, intents: list[IntentResult]) -> str:
-        vague = [i for i in intents if i.intent_type == "vague"]
-        if not vague:
-            return "请问您想咨询哪个功能的操作？"
-        docs = sorted(
-            {m["doc"] for i in vague for m in self._meta_index if m["id"] in i.chunk_id_list}
-        )
-        if docs:
-            options = "、".join(docs[:5])
-            return f"请问您咨询的是哪个系统/功能模块？（可选：{options}）"
-        return "请问您想咨询哪个功能模块的什么操作？（请说明系统名称和具体功能点）"
+        """规则降级路径的追问模板：按缺失要素生成针对性问题。"""
+        fields: set[str] = set()
+        for i in intents:
+            if i.intent_type != "vague":
+                continue
+            fields.update(i.missing_fields)
+            if not i.module:
+                fields.add("module")
+            if not i.description:
+                fields.add("description")
+        parts: list[str] = []
+        if "module" in fields:
+            parts.append("请问您想咨询哪个系统或功能模块？")
+        if "description" in fields:
+            parts.append("您想了解该模块的哪项具体操作或功能？")
+        if "role" in fields:
+            parts.append("您的角色是？（如管理员、教职工）")
+        return " ".join(parts) or "请问您想咨询哪个功能的操作？"

@@ -53,7 +53,7 @@ class ChatService:
 
     # ---------- 主流水线 ----------
 
-    async def handle_chat(self, req: ChatRequest) -> AsyncGenerator[str, None]:
+    async def handle_chat(self, req: ChatRequest) -> AsyncGenerator[str]:
         session_id = req.session_id or uuid.uuid4().hex
         message_id = uuid.uuid4().hex
         # SSE 头事件：告知前端本次会话/消息 id
@@ -153,7 +153,7 @@ class ChatService:
             ):
                 yield chunk
 
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.error("chat_pipeline_error", error=str(e), session_id=session_id)
             yield sse.error("PIPELINE_ERROR", str(e))
 
@@ -168,7 +168,7 @@ class ChatService:
         message_id: str,
         steps: list[dict],
         prefix: str = "",
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[str]:
         # 逐子问题检索（top_k=2）
         yield _step_payload(steps, "retrieve", "向量检索中…")
         all_hits: list[SearchResult] = []
@@ -274,17 +274,14 @@ class ChatService:
 
     @staticmethod
     def _missing_fields(vague_intents) -> list[str]:
+        """汇总澄清需补充的字段：优先意图识别 LLM 给出的 missing_fields，
+        其余按要素空缺推断；role 非必填，仅在 LLM 明确指出时追问。"""
         fields: set[str] = set()
         for i in vague_intents:
-            if len(i.chunk_id_list) > 1:
-                # 多候选歧义：需要用户指定模块
-                fields.add("module")
+            fields.update(i.missing_fields)
             if not i.module:
                 fields.add("module")
             if not i.description:
                 fields.add("description")
-            if not i.role:
-                fields.add("role")
-        # role 缺失通常不阻塞，优先级最低
         ordered = [f for f in ("module", "description", "role") if f in fields]
         return ordered or ["module"]

@@ -12,7 +12,6 @@ services:
       MYSQL_HOST: mysql
       REDIS_URL: redis://redis:6379/0
       CHUNKS_PATH: /data/chunks/chunks.json
-      META_DATA_PATH: /data/chunks/meta_data.json
       MEDIA_ROOT: /data/manuals
     volumes:
       # 只读挂载知识库数据（compose 位于 code/docker/，数据位于 操作手册RAG/）
