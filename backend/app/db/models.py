@@ -1,7 +1,7 @@
-"""SQLAlchemy 表模型：会话/消息/反馈/意图日志/检索日志/审计。"""
+"""SQLAlchemy 表模型：会话/消息/反馈/意图日志/检索日志/审计/源文档/切片/提示词。"""
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -89,4 +89,98 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(128), unique=True)
     password_hash: Mapped[str] = mapped_column(String(256))
     role: Mapped[str] = mapped_column(String(32), default="user")  # user | admin
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class SourceDocument(Base):
+    __tablename__ = "source_documents"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    doc_name: Mapped[str] = mapped_column(String(256), unique=True, index=True)
+    original_file_path: Mapped[str] = mapped_column(String(512))
+    md_file_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    preview_file_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Chunk(Base):
+    __tablename__ = "chunks"
+
+    id: Mapped[str] = mapped_column(String(512), primary_key=True)
+    doc_id: Mapped[str] = mapped_column(String(64), index=True)
+    doc: Mapped[str] = mapped_column(String(256), index=True)
+    chunk_type: Mapped[str] = mapped_column(String(16))  # parent | child
+    parent_id: Mapped[str | None] = mapped_column(String(512), nullable=True, index=True)
+    child_index: Mapped[int] = mapped_column(Integer, default=0)
+    path: Mapped[str] = mapped_column(String(1024))
+    level: Mapped[int] = mapped_column(Integer, default=2)
+    chunk_index: Mapped[int] = mapped_column(Integer, default=0)
+    content: Mapped[str] = mapped_column(Text)
+    char_count: Mapped[int] = mapped_column(Integer, default=0)
+    has_images: Mapped[bool] = mapped_column(Boolean, default=False)
+    image_count: Mapped[int] = mapped_column(Integer, default=0)
+    vector_state: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    vector_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PromptTemplate(Base):
+    __tablename__ = "prompt_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    content: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class LlmCallLog(Base):
+    __tablename__ = "llm_call_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    message_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    call_type: Mapped[str] = mapped_column(String(32))  # intent | answer
+    system_prompt: Mapped[str] = mapped_column(Text)
+    messages: Mapped[list] = mapped_column(JSON)
+    output: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Ticket(Base):
+    __tablename__ = "tickets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(256))
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | processing | resolved | closed
+    priority: Mapped[str] = mapped_column(String(16), default="medium")  # high | medium | low
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class FeedbackTicket(Base):
+    __tablename__ = "feedback_tickets"
+    __table_args__ = (
+        UniqueConstraint("feedback_id", "ticket_id", name="uk_feedback_ticket"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    feedback_id: Mapped[int] = mapped_column(Integer)  # 左前缀被唯一键覆盖
+    ticket_id: Mapped[int] = mapped_column(Integer, index=True)  # 对应 idx_ticket
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

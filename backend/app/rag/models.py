@@ -34,3 +34,11 @@ class FeedbackRequest(BaseModel):
     message_id: str
     score: int  # 1 赞 / -1 踩
     comment: str = ""
+
+
+class RenameSessionRequest(BaseModel):
+    title: str
+
+
+class DeleteMessagesRequest(BaseModel):
+    message_ids: list[str]

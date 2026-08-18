@@ -129,3 +129,44 @@ export async function submitFeedback(
     return false
   }
 }
+
+export async function renameSession(sessionId: string, title: string): Promise<boolean> {
+  try {
+    const resp = await fetch(`${BASE}/sessions/${sessionId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    })
+    return resp.ok
+  } catch (e) {
+    console.error('重命名会话失败', e)
+    return false
+  }
+}
+
+export async function deleteSession(sessionId: string): Promise<boolean> {
+  try {
+    const resp = await fetch(`${BASE}/sessions/${sessionId}`, { method: 'DELETE' })
+    return resp.ok
+  } catch (e) {
+    console.error('删除会话失败', e)
+    return false
+  }
+}
+
+export async function deleteMessages(
+  sessionId: string,
+  messageIds: string[],
+): Promise<boolean> {
+  try {
+    const resp = await fetch(`${BASE}/sessions/${sessionId}/messages`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message_ids: messageIds }),
+    })
+    return resp.ok
+  } catch (e) {
+    console.error('删除消息失败', e)
+    return false
+  }
+}

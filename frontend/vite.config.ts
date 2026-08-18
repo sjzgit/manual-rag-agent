@@ -12,7 +12,7 @@ export default defineConfig({
       '/health': 'http://127.0.0.1:8001',
       '/sessions': 'http://127.0.0.1:8001',
       '/feedback': 'http://127.0.0.1:8001',
-      '/admin': 'http://127.0.0.1:8001',
+      '/admin/api': 'http://127.0.0.1:8001',
       '/api': 'http://127.0.0.1:8001',
     },
   },

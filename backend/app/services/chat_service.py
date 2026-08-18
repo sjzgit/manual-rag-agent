@@ -8,6 +8,7 @@ from ..core.logging import get_logger
 from ..intent.models import ClarifyState
 from ..intent.recognizer import IntentRecognizer
 from ..prompts.manual import (
+    AGENTIC_SYSTEM_PROMPT,
     ANSWER_SYSTEM_PROMPT,
     CLARIFY_EXHAUSTED_PREFIX,
     IRRELEVANT_REPLY,
@@ -42,6 +43,7 @@ class ChatService:
         session_service: SessionService | None = None,
         redis=None,
         agentic=None,
+        prompt_service=None,
     ):
         self.settings = settings
         self.retriever = retriever
@@ -50,6 +52,11 @@ class ChatService:
         self.sessions = session_service
         self.redis = redis
         self.agentic = agentic
+        self.prompt_service = prompt_service
+
+    def _prompt(self, key: str, default: str) -> str:
+        """从提示词服务取模板，未注入时回退代码常量。"""
+        return self.prompt_service.get(key) if self.prompt_service else default
 
     # ---------- 主流水线 ----------
 
@@ -85,8 +92,9 @@ class ChatService:
                 state = ClarifyState(original_question=question)
 
             if self.sessions:
+                # 用户消息 id 采用「assistant 消息 id + _u」确定性后缀，便于前端按「一组问答」分组删除
                 await self.sessions.save_message(
-                    uuid.uuid4().hex, session_id, "user", req.clarify_answer or req.question
+                    f"{message_id}_u", session_id, "user", req.clarify_answer or req.question
                 )
 
             # 1) 意图识别（结合会话上下文：指代/承接性提问根据历史补全模块）
@@ -107,12 +115,22 @@ class ChatService:
             )
             if self.sessions:
                 await self.sessions.log_intents(session_id, message_id, batch)
+                for call in batch.llm_calls:
+                    await self.sessions.log_llm_call(
+                        session_id,
+                        message_id,
+                        "intent",
+                        call["system_prompt"],
+                        call["messages"],
+                        call["output"],
+                    )
 
             # 2) 不相关 → 拒答
             if batch.has_irrelevant:
-                yield sse.token(IRRELEVANT_REPLY)
+                reply = self._prompt("irrelevant_reply", IRRELEVANT_REPLY)
+                yield sse.token(reply)
                 await self._set_clarify_state(session_id, None)
-                await self._save_assistant(session_id, message_id, IRRELEVANT_REPLY, None, steps)
+                await self._save_assistant(session_id, message_id, reply, None, steps)
                 yield sse.done(message_id)
                 return
 
@@ -129,7 +147,7 @@ class ChatService:
                     await self._set_clarify_state(session_id, None)
                     async for chunk in self._answer_flow(
                         session_id, question, vague, req.doc, message_id, steps=steps,
-                        prefix=CLARIFY_EXHAUSTED_PREFIX,
+                        prefix=self._prompt("clarify_exhausted_prefix", CLARIFY_EXHAUSTED_PREFIX),
                     ):
                         yield chunk
                     return
@@ -198,8 +216,9 @@ class ChatService:
 
         # 无命中 → 未找到
         if not all_hits:
-            yield sse.token(NOT_FOUND_REPLY)
-            await self._save_assistant(session_id, message_id, NOT_FOUND_REPLY, None, steps)
+            not_found = self._prompt("not_found_reply", NOT_FOUND_REPLY)
+            yield sse.token(not_found)
+            await self._save_assistant(session_id, message_id, not_found, None, steps)
             yield sse.done(message_id)
             return
 
@@ -216,14 +235,31 @@ class ChatService:
             async for text in self.agentic.stream_answer(question, history):
                 full_text += text
                 yield sse.token(text)
+            if self.sessions:
+                # Agent 内部多轮 tool call 不逐次展开，按单次 answer 调用记录
+                agentic_system = self._prompt("agentic_system", AGENTIC_SYSTEM_PROMPT)
+                await self.sessions.log_llm_call(
+                    session_id,
+                    message_id,
+                    "answer",
+                    agentic_system,
+                    [{"role": "user", "content": question}],
+                    full_text,
+                )
         else:
             # Generic 模式：固定注入检索上下文
             context = self.retriever.build_context(all_hits)
-            system = ANSWER_SYSTEM_PROMPT.format(context=context)
+            system = self._prompt("answer_system", ANSWER_SYSTEM_PROMPT).format(
+                context=context
+            )
             messages = [{"role": "user", "content": question}]
             async for text in self.agent.stream_answer(system, messages):
                 full_text += text
                 yield sse.token(text)
+            if self.sessions:
+                await self.sessions.log_llm_call(
+                    session_id, message_id, "answer", system, messages, full_text
+                )
 
         # 来源卡片
         source_chunks: list[SourceChunk] = [

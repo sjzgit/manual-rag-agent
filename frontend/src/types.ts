@@ -49,3 +49,131 @@ export interface SessionItem {
   title: string
   updated_at: string
 }
+
+/** 管理端类型 */
+
+export interface DocumentItem {
+  id: string
+  doc_name: string
+  file_size: number
+  status: 'pending' | 'processing' | 'success' | 'failure'
+  error_message?: string | null
+  chunk_count: number
+  created_at: string | null
+}
+
+export interface ChunkItem {
+  id: string
+  chunk_type: 'parent' | 'child'
+  parent_id: string | null
+  child_index: number
+  path: string
+  level: number
+  chunk_index: number
+  content: string
+  char_count: number
+  has_images: boolean
+  image_count: number
+  vector_state: string | null
+  vector_id: string | null
+}
+
+export interface PromptItem {
+  key: string
+  name: string
+  content: string
+  is_customized: boolean
+}
+
+export interface AdminSessionItem {
+  id: string
+  title: string
+  doc_filter: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface AdminSessionDetail {
+  session: {
+    id: string
+    title: string
+    doc_filter: string | null
+    clarify_state: unknown
+    created_at: string | null
+    updated_at: string | null
+  }
+  messages: {
+    id: string
+    role: 'user' | 'assistant'
+    content: string
+    sources: SourceChunk[]
+    steps: StepEvent[]
+    created_at: string | null
+  }[]
+}
+
+export interface SessionLogs {
+  intent_logs: {
+    id: number
+    message_id: string
+    sub_question: Record<string, any>
+    intent_type: string
+    intent_reason: string
+    used_llm: boolean
+    created_at: string | null
+  }[]
+  retrieval_logs: {
+    id: number
+    message_id: string
+    sub_question: string
+    chunk_id: string
+    doc: string
+    path: string
+    score: number
+    created_at: string | null
+  }[]
+  llm_call_logs: LlmCallLog[]
+}
+
+export interface LlmCallLog {
+  id: number
+  message_id: string
+  call_type: 'intent' | 'answer'
+  system_prompt: string
+  messages: { role: string; content: string }[]
+  output: string
+  created_at: string | null
+}
+
+/** 用户反馈（管理端列表条目，含 join 出的会话信息） */
+
+export interface FeedbackItem {
+  id: number
+  score: 1 | -1
+  comment: string
+  created_at: string | null
+  message_id: string
+  session_id: string | null
+  session_title: string | null
+  message_content: string | null
+}
+
+export type TicketStatus = 'pending' | 'processing' | 'resolved' | 'closed'
+export type TicketPriority = 'high' | 'medium' | 'low'
+
+export interface TicketItem {
+  id: number
+  title: string
+  status: TicketStatus
+  priority: TicketPriority
+  result: string | null
+  processed_at: string | null
+  created_at: string | null
+  updated_at: string | null
+  feedback_count: number
+}
+
+export interface TicketDetail {
+  ticket: Omit<TicketItem, 'feedback_count'>
+  feedbacks: FeedbackItem[]
+}

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import MarkdownIt from 'markdown-it'
-import { BookOpen, ExternalLink, X } from 'lucide-vue-next'
+import { BookOpen, ChevronDown, ExternalLink, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import type { SourceChunk } from '../types'
 
@@ -12,6 +12,7 @@ const items = computed(() => props.sources)
 
 const active = ref<SourceChunk | null>(null)
 const previewUrl = ref<string | null>(null)
+const expanded = ref(false)
 
 function open(chunk: SourceChunk) {
   active.value = chunk
@@ -37,13 +38,21 @@ function onBodyClick(e: MouseEvent) {
 
 <template>
   <div v-if="items.length" class="mt-3 border-t border-muted pt-2.5">
-    <div class="mb-2 flex items-center gap-1.5 text-[11px] font-medium text-ink-sub">
+    <button
+      class="mb-2 flex w-full items-center gap-1.5 text-[11px] font-medium text-ink-sub transition-colors hover:text-ink cursor-pointer"
+      @click="expanded = !expanded"
+    >
       <BookOpen :size="13" class="text-primary" />
       <span>来源原文（{{ items.length }}）</span>
-      <span class="ml-auto text-[10px] text-ink-sub/50">点击查看图文原文</span>
-    </div>
+      <span class="ml-auto text-[10px] text-ink-sub/50">点击{{ expanded ? '收起' : '查看' }}图文原文</span>
+      <ChevronDown
+        :size="13"
+        class="transition-transform duration-200"
+        :class="{ 'rotate-180': expanded }"
+      />
+    </button>
 
-    <div class="flex flex-col gap-1.5">
+    <div v-show="expanded" class="flex flex-col gap-1.5">
       <button
         v-for="s in items"
         :key="s.chunk_id"

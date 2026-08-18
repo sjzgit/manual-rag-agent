@@ -1,10 +1,11 @@
 """会话/消息/澄清状态/日志的 MySQL 读写。数据库不可用时静默跳过。"""
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
 
 from app.core.logging import get_logger
 from app.db.models import (
     Feedback,
     IntentLog,
+    LlmCallLog,
     Message,
     RetrievalLog,
     Session,
@@ -45,6 +46,71 @@ class SessionService:
                 {"id": r.id, "title": r.title, "updated_at": r.updated_at.isoformat()}
                 for r in rows
             ]
+
+    async def rename_session(self, session_id: str, title: str) -> bool:
+        if not self.db.available:
+            return False
+        try:
+            async with self.db.session() as s:
+                row = await s.get(Session, session_id)
+                if row is None:
+                    return False
+                row.title = title[:50] or "新会话"
+                await s.commit()
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("rename_session_failed", error=str(e))
+            return False
+
+    async def delete_session(self, session_id: str) -> bool:
+        """删除会话及其消息、反馈、日志（无外键，需手动级联清理）。"""
+        if not self.db.available:
+            return False
+        try:
+            async with self.db.session() as s:
+                msg_ids = (
+                    (
+                        await s.execute(
+                            select(Message.id).where(Message.session_id == session_id)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if msg_ids:
+                    await s.execute(delete(Feedback).where(Feedback.message_id.in_(msg_ids)))
+                    await s.execute(delete(IntentLog).where(IntentLog.message_id.in_(msg_ids)))
+                    await s.execute(delete(RetrievalLog).where(RetrievalLog.message_id.in_(msg_ids)))
+                    await s.execute(delete(LlmCallLog).where(LlmCallLog.message_id.in_(msg_ids)))
+                await s.execute(delete(Message).where(Message.session_id == session_id))
+                await s.execute(delete(Session).where(Session.id == session_id))
+                await s.commit()
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("delete_session_failed", error=str(e))
+            return False
+
+    async def delete_messages(self, session_id: str, message_ids: list[str]) -> bool:
+        """删除一组消息，并清理其关联反馈与日志。"""
+        if not self.db.available or not message_ids:
+            return False
+        try:
+            async with self.db.session() as s:
+                await s.execute(delete(Feedback).where(Feedback.message_id.in_(message_ids)))
+                await s.execute(delete(IntentLog).where(IntentLog.message_id.in_(message_ids)))
+                await s.execute(delete(RetrievalLog).where(RetrievalLog.message_id.in_(message_ids)))
+                await s.execute(delete(LlmCallLog).where(LlmCallLog.message_id.in_(message_ids)))
+                await s.execute(
+                    delete(Message).where(
+                        Message.id.in_(message_ids),
+                        Message.session_id == session_id,
+                    )
+                )
+                await s.commit()
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("delete_messages_failed", error=str(e))
+            return False
 
     async def get_messages(self, session_id: str, limit: int = 50) -> list[dict]:
         if not self.db.available:
@@ -93,18 +159,22 @@ class SessionService:
                         steps=steps,
                     )
                 )
-                # 更新会话时间与标题（首条用户消息）
+                # 刷新会话活跃时间（会话列表按最近活跃排序）
                 await s.execute(
                     update(Session)
                     .where(Session.id == session_id)
-                    .values(
-                        title=(
-                            content[:50]
-                            if role == "user"
-                            else Session.__table__.c.title
-                        )
-                    )
+                    .values(updated_at=func.now())
                 )
+                # 仅首条用户消息写入标题，后续输入不再覆盖
+                if role == "user":
+                    await s.execute(
+                        update(Session)
+                        .where(
+                            Session.id == session_id,
+                            Session.title.in_(["", "新会话"]),
+                        )
+                        .values(title=content[:50])
+                    )
                 await s.commit()
         except Exception as e:  # noqa: BLE001
             logger.warning("save_message_failed", error=str(e))
@@ -187,6 +257,34 @@ class SessionService:
                 await s.commit()
         except Exception as e:  # noqa: BLE001
             logger.warning("log_retrievals_failed", error=str(e))
+
+    async def log_llm_call(
+        self,
+        session_id: str,
+        message_id: str,
+        call_type: str,
+        system_prompt: str,
+        messages: list[dict],
+        output: str,
+    ) -> None:
+        """记录一次 LLM 调用的原始输入输出（intent / answer）。"""
+        if not self.db.available:
+            return
+        try:
+            async with self.db.session() as s:
+                s.add(
+                    LlmCallLog(
+                        session_id=session_id,
+                        message_id=message_id,
+                        call_type=call_type,
+                        system_prompt=system_prompt,
+                        messages=messages,
+                        output=output,
+                    )
+                )
+                await s.commit()
+        except Exception as e:
+            logger.warning("log_llm_call_failed", error=str(e))
 
     async def save_feedback(self, message_id: str, score: int, comment: str) -> bool:
         if not self.db.available:

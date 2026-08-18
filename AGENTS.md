@@ -4,7 +4,7 @@
 
 ## 1. 项目简介
 
-基于 RAG 的企业操作手册智能问答系统。核心流水线：**意图识别 → 多轮澄清(≤3轮) → Milvus 稠密检索(top_k=2/子问题) → LLM 流式回答(SSE)**，前端全程过程可视化 + 来源卡片展示。
+基于 RAG 的企业操作手册智能问答系统。核心流水线：**意图识别 → 多轮澄清(≤3轮) → Milvus 稠密检索(子切片 top_k=8 + 父切片回溯) → LLM 流式回答(SSE)**，前端全程过程可视化 + 来源卡片展示；另含后台管理端（知识库管理 / 提示词管理 / 会话管理，入口 `/admin`）。
 
 | 层级 | 技术 |
 | --- | --- |
@@ -50,8 +50,9 @@ api（路由/SSE，薄层） → services（编排/流水线） → intent / age
 ```
 
 - **依赖单向向下**，禁止下层 import 上层；模块间通信用显式参数传递或 pydantic 模型。
-- 全局单例在 [main.py](backend/app/main.py) `lifespan` 中初始化并挂到 `app.state`（settings / retriever / recognizer / db / session_service / redis / chat_service），路由层通过 `request.app.state.xxx` 取用，**不重复实例化**。
+- 全局单例在 [main.py](backend/app/main.py) `lifespan` 中初始化并挂到 `app.state`（settings / db / prompt_service / retriever / knowledge / recognizer / session_service / redis / chat_service），路由层通过 `request.app.state.xxx` 取用，**不重复实例化**。注意初始化顺序：db → prompt_service → retriever（retriever 需从 MySQL chunks 表加载父子映射）。
 - 服务无状态：会话历史每轮从 MySQL 重建（支持水平扩展）；澄清状态存 sessions.clarify_state，DB 不可用时内存兜底。
+- BGE 模型 / Milvus 连接为 `retriever` 持有的单例，知识库向量化入库复用该单例（`retriever.embed` / `retriever.upsert_children`），**不重复加载模型**。
 
 ### 3.2 目录结构与文件存放规则
 
@@ -59,25 +60,27 @@ api（路由/SSE，薄层） → services（编排/流水线） → intent / age
 code/
 ├── backend/
 │   ├── app/
-│   │   ├── api/          # 路由层：一个业务域一个文件（chat/images/feedback/admin），只做参数校验与 SSE 透传
+│   │   ├── api/          # 路由层：一个业务域一个文件（chat/images/feedback/admin_kb/admin_prompt/admin_session），只做参数校验与透传
 │   │   ├── core/         # config.py(全部环境变量) / auth.py / logging.py
 │   │   ├── db/           # models.py(全部 ORM 表) / session.py(engine/session 工厂)
+│   │   ├── knowledge/    # 知识库能力：converter.py(docx→md) + chunker.py(父子切片) + models.py，纯代码非 LLM
 │   │   ├── intent/       # 意图识别：recognizer.py + models.py(IntentResult/ClarifyState)
 │   │   ├── agent/        # AgentScope Agent 工厂
-│   │   ├── prompts/      # Prompt 模板：一个业务域一个文件，常量导出
-│   │   ├── rag/          # retriever.py + models.py(ChatRequest/SearchResult/SourceChunk)
-│   │   ├── services/     # 业务编排：chat_service / session_service / cache / agent_runner
+│   │   ├── prompts/      # Prompt 模板：一个业务域一个文件，常量导出（兼作 prompt_templates 默认值）
+│   │   ├── rag/          # retriever.py(子切片检索+父子回溯) + models.py(ChatRequest/SearchResult/SourceChunk)
+│   │   ├── services/     # 业务编排：chat_service / knowledge_service / prompt_service / session_service / cache / agent_runner
 │   │   └── utils/        # sse.py 等通用工具
 │   ├── tests/            # pytest，与被测模块同名（test_chat/test_intent/test_retriever/test_admin）
 │   ├── pyproject.toml    # 依赖 + ruff/pyright/pytest 配置，唯一事实来源
 │   └── .env / .env.example
 ├── frontend/
 │   └── src/
-│       ├── api/          # 所有 HTTP/SSE 请求只在此层（chat.ts）
+│       ├── api/          # 所有 HTTP/SSE 请求只在此层（chat.ts C端 / admin.ts 管理端）
+│       ├── router/       # vue-router：/ → ChatView；/admin → AdminLayout（知识库/提示词/会话）
 │       ├── components/   # 可复用组件，PascalCase.vue（MessageBubble/SourceCard/StepPanel/ClarifyCard…）
 │       ├── stores/       # Pinia store（chat.ts），组件不直接发请求
-│       ├── views/        # 页面级组件（ChatView.vue）
-│       └── types.ts      # 全局类型唯一出处，与后端 SSE 契约一一对应
+│       ├── views/        # 页面级组件（ChatView.vue + admin/ 管理端三页面）
+│       └── types.ts      # 全局类型唯一出处，与后端 SSE/管理端契约一一对应
 ├── sql/
 │   ├── init.sql          # 全量基线（只增不改）
 │   └── migrations/       # V00X__desc.sql 版本化增量（详见 migrations/README.md）
@@ -96,11 +99,11 @@ code/
 - 所有配置经 [config.py](backend/app/core/config.py) `Settings` 读取（.env），**密钥不落代码、不进日志、不提交**；新增配置项必须同步 `.env.example` 并给安全默认值。
 - 提交前：后端 `ruff check` + `pyright` + `pytest` 全绿；前端 `npm run build`（含 vue-tsc）通过。
 - Git 提交信息用中文短句概述变更（参考历史："完善后端项目配置"、"BUG"→ 应避免无信息量的消息）。
-- 知识库数据（`文档切片/chunks.json`、`meta_data.json`、`处理后的md手册文档/`）**只读使用**，任何代码不得写入。
+- 知识库数据（`文档切片/chunks.json`、`meta_data.json`、`处理后的md手册文档/`）**只读使用**，任何代码不得写入；管理端上传/转换/图片写入走独立目录 `uploads/`（`UPLOAD_ROOT`），不得与只读知识库目录混用。
 
 ### 4.2 后端（FastAPI / Python 3.13）
 
-- **全异步**：路由与服务方法一律 `async def`；同步阻塞调用（pymilvus、sentence-transformers/BGE 编码）必须包 `asyncio.to_thread`。
+- **全异步**：路由与服务方法一律 `async def`；同步阻塞调用（pymilvus、sentence-transformers/BGE 编码、mammoth docx 转换）必须包 `asyncio.to_thread`。
 - **路由保持薄**：参数校验（pydantic）+ 调 service + 返回，业务逻辑不写在 `api/`。
 - 数据契约用 pydantic 模型表达（各模块 `models.py`），跨层传 dict 时须先 `model_dump()`；接口出入参字段用 snake_case。
 - 日志用 `structlog` 的 `get_logger(__name__)`，事件式键值对（`logger.info("app_started", ...)` 风格），记录 session_id / 各阶段耗时 / 命中数；**禁止记录 API Key 与完整 Prompt 中的敏感信息**。
@@ -125,7 +128,7 @@ code/
   3. 同步更新 [backend/app/db/models.py](backend/app/db/models.py) ORM 模型。
 - 命名：表/字段全小写下划线，表名复数（sessions/messages）；索引 `idx_表_用途`。
 - 建表统一：`ENGINE=InnoDB`、`utf8mb4 / utf8mb4_unicode_ci`；每表每字段必写中文 `COMMENT`；时间用 `DATETIME DEFAULT CURRENT_TIMESTAMP`（更新时间加 `ON UPDATE`）。
-- 主键策略：业务表（sessions/messages/users）用 `VARCHAR(64)` 应用层生成的 uuid hex；日志/反馈表用 `INT AUTO_INCREMENT`。
+- 主键策略：业务表（sessions/messages/users/source_documents）用 `VARCHAR(64)` 应用层生成的 uuid hex；日志/反馈表用 `INT AUTO_INCREMENT`；切片表 `chunks` 用 `VARCHAR(512)` 存业务语义 id（父=`{doc}_{path}`、子=`{父id}::c{child_index}`）。
 - 关联用**逻辑外键**（session_id/message_id 字段 + 显式索引），不建物理外键；高频查询路径（按会话查消息/日志）必须建索引。
 - 结构化数据（sources/steps/clarify_state/sub_question）存 JSON 列；JSON 列内的结构变更不算表结构变更，但 ORM 模型与前端类型须同步。
 - 禁止 `SELECT *` 于正式查询、禁止在循环内逐条查询（N+1）；写操作走 `session_service` 聚合，不散落各处。
@@ -135,9 +138,11 @@ code/
 1. **SSE 事件协议**（[utils/sse.py](backend/app/utils/sse.py) ↔ 前端 `types.ts`/`stores/chat.ts`）：
    事件类型 `meta / step / clarify / token / sources / done / error`，字段见 `sse.py`；新增事件类型须前后端同步并考虑历史会话回看兼容。
 2. **意图识别输出** `IntentResult`：`input / simple_input / module / role / description / intent_type(irrelevant|precise|vague) / missing_fields / clarify_question / intent_reason`。纯 Prompt 驱动（不依赖 meta_data.json，不做切片匹配，收录与否由向量检索决定）；LLM 输出 JSON 先代码校验修复、失败重试一次、仍失败判 vague 友好提示。
-3. **回答兜底话术**：检索不到必须回复"手册中未找到"；irrelevant 固定话术拒答——两者来自 `prompts/manual.py` 常量，不硬编码在业务代码。
-4. **图片路由** `/api/images/{doc}/{filename}` 必须做路径穿越校验；markdown 中 `./media/x.png` 改写为该路由 URL。
+3. **回答兜底话术**：检索不到必须回复"手册中未找到"；irrelevant 固定话术拒答——两者来自 `prompts/manual.py` 常量（经 `prompt_service.get` 读取，DB 可编辑），不硬编码在业务代码。
+4. **图片路由** `/api/images/{doc}/{filename}` 必须做路径穿越校验；markdown 中 `./media/x.png` 改写为该路由 URL（管理端上传的图片优先取 `uploads/{doc}/media/`、回退只读 `media_root`）。
 5. **澄清轮次上限** `MAX_CLARIFY_ROUNDS=3`，超限按最相关切片直接回答并提示。
+6. **父子切片检索链路**（v2.0）：Milvus 只入子切片（collection `manual_rag_child_chunks`），父切片存 MySQL `chunks` 表；检索走「子切片命中 → `child_id→parent_id` 回溯 → 按父去重 → 按 doc+chunk_index 文档序排序」；`retrieve_top_k` 默认 8；来源卡片子 path 定位 + 父 content 展示。
+7. **管理端 API**：统一前缀 `/admin/api/*`（与 SPA 页面路由 `/admin` 区分）；本期不做登录/权限。
 
 ## 6. 红线
 

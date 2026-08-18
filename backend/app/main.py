@@ -6,6 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.agent.manual_agent import ManualAnswerAgent
 from app.api import admin as admin_api
+from app.api import admin_feedback as admin_feedback_api
+from app.api import admin_kb as admin_kb_api
+from app.api import admin_prompt as admin_prompt_api
+from app.api import admin_session as admin_session_api
 from app.api import chat as chat_api
 from app.api import feedback as feedback_api
 from app.api import images as images_api
@@ -17,6 +21,9 @@ from app.rag import retriever as retriever_module
 from app.rag.retriever import ManualRetriever
 from app.services.cache import RedisService
 from app.services.chat_service import ChatService
+from app.services.feedback_service import FeedbackService
+from app.services.knowledge_service import KnowledgeService
+from app.services.prompt_service import PromptService
 from app.services.session_service import SessionService
 
 logger = get_logger(__name__)
@@ -28,20 +35,30 @@ async def lifespan(app: FastAPI):
     setup_logging(settings.debug)
     app.state.settings = settings
 
-    retriever = ManualRetriever(settings)
-    await retriever.startup()
-    retriever_module.set_retriever(retriever)
-    app.state.retriever = retriever
-
-    recognizer = IntentRecognizer(settings)
-    await recognizer.startup()
-    app.state.recognizer = recognizer
-
     db = Database(settings)
     await db.startup()
     app.state.db = db
     session_service = SessionService(db)
     app.state.session_service = session_service
+
+    feedback_service = FeedbackService(db)
+    app.state.feedback_service = feedback_service
+
+    prompt_service = PromptService(db)
+    await prompt_service.startup()
+    app.state.prompt_service = prompt_service
+
+    retriever = ManualRetriever(settings, db)
+    await retriever.startup()
+    retriever_module.set_retriever(retriever)
+    app.state.retriever = retriever
+
+    knowledge = KnowledgeService(settings, db, retriever)
+    app.state.knowledge = knowledge
+
+    recognizer = IntentRecognizer(settings, prompt_service)
+    await recognizer.startup()
+    app.state.recognizer = recognizer
 
     redis_service = RedisService(settings)
     await redis_service.startup()
@@ -52,9 +69,16 @@ async def lifespan(app: FastAPI):
     if settings.rag_mode == "agentic":
         from app.services.agent_runner import AgenticRunner
 
-        agentic = AgenticRunner(settings)
+        agentic = AgenticRunner(settings, prompt_service)
     app.state.chat_service = ChatService(
-        settings, retriever, recognizer, agent, session_service, redis_service, agentic
+        settings,
+        retriever,
+        recognizer,
+        agent,
+        session_service,
+        redis_service,
+        agentic,
+        prompt_service,
     )
 
     logger.info(
@@ -90,6 +114,11 @@ def create_app() -> FastAPI:
     app.include_router(images_api.router)
     app.include_router(feedback_api.router)
     app.include_router(admin_api.router)
+    app.include_router(admin_kb_api.router)
+    app.include_router(admin_prompt_api.router)
+    app.include_router(admin_session_api.router)
+    app.include_router(admin_feedback_api.feedback_router)
+    app.include_router(admin_feedback_api.ticket_router)
 
     return app
 

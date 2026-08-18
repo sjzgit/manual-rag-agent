@@ -1,7 +1,11 @@
 """反馈与会话管理接口。"""
 from fastapi import APIRouter, HTTPException, Request
 
-from app.rag.models import FeedbackRequest
+from app.rag.models import (
+    DeleteMessagesRequest,
+    FeedbackRequest,
+    RenameSessionRequest,
+)
 
 router = APIRouter(tags=["feedback"])
 
@@ -37,3 +41,29 @@ async def get_messages(session_id: str, request: Request):
     return {
         "messages": await request.app.state.session_service.get_messages(session_id)
     }
+
+
+@router.patch("/sessions/{session_id}")
+async def rename_session(session_id: str, req: RenameSessionRequest, request: Request):
+    ok = await request.app.state.session_service.rename_session(session_id, req.title)
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在或数据库不可用")
+    return {"status": "ok"}
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: str, request: Request):
+    ok = await request.app.state.session_service.delete_session(session_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在或数据库不可用")
+    return {"status": "ok"}
+
+
+@router.delete("/sessions/{session_id}/messages")
+async def delete_messages(session_id: str, req: DeleteMessagesRequest, request: Request):
+    ok = await request.app.state.session_service.delete_messages(
+        session_id, req.message_ids
+    )
+    if not ok:
+        raise HTTPException(status_code=503, detail="数据库不可用")
+    return {"status": "ok"}

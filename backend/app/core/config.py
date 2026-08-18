@@ -28,18 +28,22 @@ class Settings(BaseSettings):
     milvus_host: str = "192.168.0.215"
     milvus_port: str = "19530"
     milvus_collection: str = "manual_rag_chunks"
+    milvus_child_collection: str = "manual_rag_child_chunks"
 
     # ---- Embedding ----
     embed_model_name: str = "BAAI/bge-base-zh-v1.5"
 
     # ---- 检索 ----
-    retrieve_top_k: int = 2
+    retrieve_top_k: int = 8
     score_threshold: float = 0.4
     rag_mode: str = "generic"  # generic | agentic
 
     # ---- 数据文件（只读） ----
     chunks_path: str = str(PROJECT_ROOT / "文档切片" / "chunks.json")
     media_root: str = str(PROJECT_ROOT / "处理后的md手册文档")
+
+    # ---- 上传目录（管理端写入，区别于只读的知识库目录） ----
+    upload_root: str = str(PROJECT_ROOT / "uploads")
 
     # ---- 主 LLM（DeepSeek，OpenAI 兼容可切换） ----
     llm_api_key: str = ""

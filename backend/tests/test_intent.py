@@ -163,7 +163,7 @@ async def test_llm_valid_first_attempt(recognizer, monkeypatch):
     monkeypatch.setattr(recognizer.settings, "intent_llm_api_key", "test-key")
 
     async def fake_chat(self, system, user, json_mode=False, max_tokens=None, history=None):
-        return _GOOD_JSON
+        return _GOOD_JSON, []
 
     monkeypatch.setattr(IntentRecognizer, "_chat", fake_chat)
     batch = await recognizer.recognize("那审批流程呢？")
@@ -180,7 +180,7 @@ async def test_llm_retry_on_bad_json(recognizer, monkeypatch):
 
     async def fake_chat(self, system, user, json_mode=False, max_tokens=None, history=None):
         calls.append(user)
-        return "坏输出" if len(calls) == 1 else _GOOD_JSON
+        return ("坏输出", []) if len(calls) == 1 else (_GOOD_JSON, [])
 
     monkeypatch.setattr(IntentRecognizer, "_chat", fake_chat)
     batch = await recognizer.recognize("问题")
@@ -197,7 +197,7 @@ async def test_llm_retry_exhausted_falls_to_vague(recognizer, monkeypatch):
 
     async def fake_chat(self, system, user, json_mode=False, max_tokens=None, history=None):
         calls.append(user)
-        return "仍然不是JSON"
+        return "仍然不是JSON", []
 
     monkeypatch.setattr(IntentRecognizer, "_chat", fake_chat)
     batch = await recognizer.recognize("问题")
@@ -263,7 +263,7 @@ async def test_llm_history_passed(recognizer, monkeypatch):
     async def fake_chat(self, system, user, json_mode=False, max_tokens=None, history=None):
         captured["history"] = history
         captured["system"] = system
-        return _GOOD_JSON
+        return _GOOD_JSON, []
 
     monkeypatch.setattr(IntentRecognizer, "_chat", fake_chat)
     history = [{"role": "user", "content": "会议室预约怎么发起？"}]

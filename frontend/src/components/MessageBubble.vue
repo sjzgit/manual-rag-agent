@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /** 消息气泡：用户右 / AI 左，Markdown 渲染 + 步骤面板 + 来源卡片 + 澄清卡片 + 反馈条 */
 import MarkdownIt from 'markdown-it'
-import { ThumbsDown, ThumbsUp, User } from 'lucide-vue-next'
+import { ElMessage } from 'element-plus'
+import { Check, Copy, ThumbsDown, ThumbsUp, Trash2, User } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import type { ChatMessage } from '../types'
 import ClarifyCard from './ClarifyCard.vue'
@@ -15,6 +16,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   clarifySubmit: [answer: string]
   feedback: [msg: ChatMessage, score: 1 | -1, comment: string]
+  delete: [msg: ChatMessage]
 }>()
 
 const md = new MarkdownIt({ html: false, linkify: true })
@@ -22,6 +24,48 @@ const rendered = computed(() => md.render(props.message.content || ''))
 
 const showCommentFor = ref<-1 | 0>(0)
 const comment = ref('')
+const copied = ref(false)
+
+/** 复制文本到剪切板：Clipboard API 在非安全上下文（内网 HTTP IP）不可用，降级 execCommand。 */
+async function copyText(text: string): Promise<boolean> {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      /* 降级到 execCommand */
+    }
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.left = '-9999px'
+    document.body.appendChild(ta)
+    ta.select()
+    ta.setSelectionRange(0, text.length)
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+async function copy() {
+  const text = props.message.content || ''
+  if (!text) return
+  const ok = await copyText(text)
+  if (ok) {
+    copied.value = true
+    setTimeout(() => {
+      copied.value = false
+    }, 1500)
+  } else {
+    ElMessage.error('复制失败，请手动复制')
+  }
+}
 
 // 回答正文中内联图片放大预览（事件委托）
 const previewUrl = ref<string | null>(null)
@@ -90,28 +134,46 @@ function submitDislike() {
         <SourceCard v-if="!message.streaming" :sources="message.sources" />
       </div>
 
-      <!-- 反馈条 -->
+      <!-- 操作条：复制 / 删除（整组问答） / 反馈 -->
       <div
-        v-if="!message.streaming && message.content && !message.clarify"
+        v-if="!message.streaming && message.content"
         class="mt-1.5 flex items-center gap-1 pl-1"
       >
         <button
-          class="rounded-md p-1.5 transition-all duration-200 hover:bg-success/10 cursor-pointer"
-          :class="message.feedback === 1 ? 'text-success' : 'text-ink-sub/60 hover:text-success'"
-          title="有帮助"
-          @click="like"
+          class="rounded-md p-1.5 transition-all duration-200 hover:bg-muted cursor-pointer"
+          :class="copied ? 'text-success' : 'text-ink-sub/60 hover:text-ink'"
+          :title="copied ? '已复制' : '复制回答'"
+          @click="copy"
         >
-          <ThumbsUp :size="14" :fill="message.feedback === 1 ? 'currentColor' : 'none'" />
+          <Check v-if="copied" :size="14" />
+          <Copy v-else :size="14" />
         </button>
         <button
-          class="rounded-md p-1.5 transition-all duration-200 hover:bg-danger/10 cursor-pointer"
-          :class="message.feedback === -1 ? 'text-danger' : 'text-ink-sub/60 hover:text-danger'"
-          title="没帮助"
-          @click="dislike"
+          class="rounded-md p-1.5 transition-all duration-200 hover:bg-danger/10 text-ink-sub/60 hover:text-danger cursor-pointer"
+          title="删除这组问答"
+          @click="emit('delete', message)"
         >
-          <ThumbsDown :size="14" :fill="message.feedback === -1 ? 'currentColor' : 'none'" />
+          <Trash2 :size="14" />
         </button>
-        <span v-if="message.feedback !== 0" class="text-[11px] text-ink-sub/60">感谢反馈</span>
+        <template v-if="!message.clarify">
+          <button
+            class="rounded-md p-1.5 transition-all duration-200 hover:bg-success/10 cursor-pointer"
+            :class="message.feedback === 1 ? 'text-success' : 'text-ink-sub/60 hover:text-success'"
+            title="有帮助"
+            @click="like"
+          >
+            <ThumbsUp :size="14" :fill="message.feedback === 1 ? 'currentColor' : 'none'" />
+          </button>
+          <button
+            class="rounded-md p-1.5 transition-all duration-200 hover:bg-danger/10 cursor-pointer"
+            :class="message.feedback === -1 ? 'text-danger' : 'text-ink-sub/60 hover:text-danger'"
+            title="没帮助"
+            @click="dislike"
+          >
+            <ThumbsDown :size="14" :fill="message.feedback === -1 ? 'currentColor' : 'none'" />
+          </button>
+          <span v-if="message.feedback !== 0" class="text-[11px] text-ink-sub/60">感谢反馈</span>
+        </template>
       </div>
 
       <!-- 踩：评语输入 -->

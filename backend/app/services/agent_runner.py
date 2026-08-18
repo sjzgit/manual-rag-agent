@@ -3,7 +3,6 @@
 Generic 模式走 chat_service 固定流水线；Agentic 模式由 Agent 自主决定何时调用检索工具。
 每轮新建 Agent 并用 observe 注入历史（无状态服务 + 记忆重建）。
 """
-import json
 from collections.abc import AsyncGenerator
 
 from agentscope.agent import Agent, ReActConfig
@@ -43,7 +42,7 @@ async def _search_manual_tool(
     return ToolChunk(content=[TextBlock(type="text", text=text)], is_last=True)
 
 
-async def build_agent(settings: Settings) -> Agent:
+async def build_agent(settings: Settings, system_prompt: str) -> Agent:
     """构建注册了 search_manual 工具的 AgentScope Agent。"""
     toolkit = Toolkit()
     await toolkit.add_tool(FunctionTool(_search_manual_tool, name="search_manual"))
@@ -63,7 +62,7 @@ async def build_agent(settings: Settings) -> Agent:
 
     return Agent(
         name="manual-assistant",
-        system_prompt=AGENTIC_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         model=model,
         toolkit=toolkit,
         react_config=ReActConfig(max_iters=6),
@@ -81,13 +80,19 @@ def _to_msg(role: str, content: str) -> Msg:
 class AgenticRunner:
     """Agentic 模式流式回答：Agent 自主调用检索工具。"""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, prompt_service=None):
         self.settings = settings
+        self.prompt_service = prompt_service
 
     async def stream_answer(
         self, question: str, history: list[dict]
     ) -> AsyncGenerator[str, None]:
-        agent = await build_agent(self.settings)
+        system_prompt = (
+            self.prompt_service.get("agentic_system")
+            if self.prompt_service
+            else AGENTIC_SYSTEM_PROMPT
+        )
+        agent = await build_agent(self.settings, system_prompt)
 
         # 注入多轮历史（跳过正在处理的最后一条用户消息由 reply 传入）
         for h in history[-10:]:

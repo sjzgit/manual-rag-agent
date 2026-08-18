@@ -28,13 +28,18 @@ _PARSE_FAILED_CLARIFY = (
 
 
 class IntentRecognizer:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, prompt_service=None):
         self.settings = settings
+        self.prompt_service = prompt_service
 
     # ---------- 生命周期 ----------
 
     async def startup(self) -> None:
         """意图识别已改为纯 Prompt 驱动，无外部索引需要加载；保留钩子供 lifespan 调用。"""
+
+    def _intent_prompt(self) -> str:
+        """意图识别提示词：优先提示词服务，未注入时回退代码常量。"""
+        return self.prompt_service.get("intent_system") if self.prompt_service else INTENT_SYSTEM_PROMPT
 
     # ---------- 主入口 ----------
 
@@ -74,14 +79,19 @@ class IntentRecognizer:
 
         输出校验：解析（含修复）失败 → Prompt 重试一次 → 仍失败判 vague 友好提示。
         """
+        llm_calls: list[dict] = []
         last_error = ""
         for attempt in (1, 2):
-            raw = await self._chat(
-                INTENT_SYSTEM_PROMPT, question, json_mode=True, history=history
+            system = self._intent_prompt()
+            raw, messages = await self._chat(
+                system, question, json_mode=True, history=history
+            )
+            llm_calls.append(
+                {"system_prompt": system, "messages": messages, "output": raw}
             )
             try:
                 intents = self._parse_intents(raw, question)
-                return IntentBatch(intents=intents, used_llm=True)
+                return IntentBatch(intents=intents, used_llm=True, llm_calls=llm_calls)
             except ValueError as e:
                 last_error = str(e)
                 logger.warning(
@@ -100,6 +110,7 @@ class IntentRecognizer:
                 )
             ],
             used_llm=True,
+            llm_calls=llm_calls,
         )
 
     async def _chat(
@@ -109,7 +120,7 @@ class IntentRecognizer:
         json_mode: bool = False,
         max_tokens: int | None = None,
         history: list[dict] | None = None,
-    ) -> str:
+    ) -> tuple[str, list[dict]]:
         s = self.settings
         messages: list[dict] = [{"role": "system", "content": system}]
         if history:
@@ -138,7 +149,7 @@ class IntentRecognizer:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-        return data["choices"][0]["message"]["content"] or ""
+        return data["choices"][0]["message"]["content"] or "", messages
 
     def _parse_intents(self, raw: str, question: str) -> list[IntentResult]:
         """校验并解析小模型 JSON 输出；无法解析时抛 ValueError（由上层重试）。"""

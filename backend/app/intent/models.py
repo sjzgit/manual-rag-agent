@@ -25,6 +25,7 @@ class IntentBatch(BaseModel):
 
     intents: list[IntentResult]
     used_llm: bool  # True=小模型识别，False=规则降级
+    llm_calls: list[dict] = Field(default_factory=list)  # LLM 原始调用 trace（含重试）
 
     @property
     def has_irrelevant(self) -> bool:

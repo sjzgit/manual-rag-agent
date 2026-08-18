@@ -3,8 +3,11 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import {
   createSession,
+  deleteMessages,
+  deleteSession,
   getMessages,
   listSessions,
+  renameSession,
   streamChat,
   submitFeedback,
 } from '../api/chat'
@@ -15,7 +18,6 @@ export const useChatStore = defineStore('chat', () => {
   const currentSessionId = ref<string>('')
   const messages = ref<ChatMessage[]>([])
   const generating = ref(false)
-  const docFilter = ref<string | null>(null)
   let abortCtrl: AbortController | null = null
 
   async function refreshSessions() {
@@ -69,6 +71,7 @@ export const useChatStore = defineStore('chat', () => {
     })
     // push 后立即从响应式数组中捕获该消息的 reactive proxy。
     // 注意：不能通过 id 反复 find，因为 onMeta 会用服务端真实 id 覆盖本地 id，导致后续查找失效。
+    const userMsg = messages.value[messages.value.length - 2]
     const aiMsg = messages.value[messages.value.length - 1]
     generating.value = true
     abortCtrl = new AbortController()
@@ -78,13 +81,14 @@ export const useChatStore = defineStore('chat', () => {
         {
           session_id: currentSessionId.value,
           question,
-          doc: docFilter.value,
           clarify_answer: clarifyAnswer,
         },
         {
           onMeta: (sid, mid) => {
             currentSessionId.value = sid
             aiMsg.id = mid
+            // 后端用户消息 id 采用「assistant id + _u」确定性后缀，据此对齐真实 id
+            userMsg.id = `${mid}_u`
           },
           onStep: (s) => aiMsg.steps.push(s),
           onClarify: (c) => {
@@ -131,17 +135,71 @@ export const useChatStore = defineStore('chat', () => {
     return ok
   }
 
+  async function renameSessionLocal(id: string, title: string) {
+    const ok = await renameSession(id, title)
+    if (ok) {
+      const s = sessions.value.find((x) => x.id === id)
+      if (s) s.title = title
+    }
+    return ok
+  }
+
+  async function deleteSessionLocal(id: string) {
+    const ok = await deleteSession(id)
+    if (!ok) return false
+    sessions.value = sessions.value.filter((x) => x.id !== id)
+    if (currentSessionId.value === id) {
+      if (sessions.value.length) {
+        await openSession(sessions.value[0].id)
+      } else {
+        await newSession()
+      }
+    }
+    return true
+  }
+
+  async function deleteMessage(msg: ChatMessage) {
+    if (generating.value) return false
+    const idx = messages.value.findIndex((m) => m.id === msg.id)
+    if (idx === -1) return false
+    // 按「一组问答」删除：助手消息连带其前一条用户消息，反之亦然
+    const ids = [msg.id]
+    if (msg.role === 'assistant') {
+      for (let i = idx - 1; i >= 0; i--) {
+        if (messages.value[i].role === 'user') {
+          ids.push(messages.value[i].id)
+          break
+        }
+      }
+    } else {
+      for (let i = idx + 1; i < messages.value.length; i++) {
+        if (messages.value[i].role === 'assistant') {
+          ids.push(messages.value[i].id)
+          break
+        }
+      }
+    }
+    const ok = await deleteMessages(currentSessionId.value, ids)
+    if (ok) {
+      const set = new Set(ids)
+      messages.value = messages.value.filter((m) => !set.has(m.id))
+    }
+    return ok
+  }
+
   return {
     sessions,
     currentSessionId,
     messages,
     generating,
-    docFilter,
     refreshSessions,
     newSession,
     openSession,
     send,
     stop,
     feedback,
+    renameSession: renameSessionLocal,
+    deleteSession: deleteSessionLocal,
+    deleteMessage,
   }
 })

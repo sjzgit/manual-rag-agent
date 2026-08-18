@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** 聊天主界面 */
-import { BookMarked, ChevronDown, GraduationCap } from 'lucide-vue-next'
+import { ElMessageBox } from 'element-plus'
+import { GraduationCap, Settings } from 'lucide-vue-next'
 import { nextTick, onMounted, ref, watch } from 'vue'
 import ChatInput from '../components/ChatInput.vue'
 import MessageBubble from '../components/MessageBubble.vue'
@@ -10,15 +11,6 @@ import type { ChatMessage } from '../types'
 
 const store = useChatStore()
 const scrollBox = ref<HTMLElement>()
-const docMenuOpen = ref(false)
-
-const DOC_OPTIONS = [
-  { value: null, label: '全部手册' },
-  { value: '上体附中系统操作手册', label: '上体附中系统操作手册' },
-  { value: '实验会议室预约操作手册', label: '实验会议室预约操作手册' },
-  { value: 'AI 自动生成操作手册功能操作手册', label: 'AI 生成手册功能' },
-  { value: '操作手册上传功能操作手册', label: '手册上传功能' },
-]
 
 onMounted(async () => {
   await store.refreshSessions()
@@ -32,17 +24,29 @@ watch(
   },
 )
 
-function selectDoc(v: string | null) {
-  store.docFilter = v
-  docMenuOpen.value = false
-}
-
 function onClarifySubmit(answer: string) {
   store.send('', answer)
 }
 
 function onFeedback(msg: ChatMessage, score: 1 | -1, comment: string) {
   store.feedback(msg, score, comment)
+}
+
+async function onMessageDelete(msg: ChatMessage) {
+  try {
+    await ElMessageBox.confirm('将同时删除该提问与对应回答，且无法恢复。', '删除这组消息', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await store.deleteMessage(msg)
+  } catch {
+    /* 用户取消 */
+  }
+}
+
+function openAdmin() {
+  window.open('/admin', '_blank')
 }
 </script>
 
@@ -53,6 +57,8 @@ function onFeedback(msg: ChatMessage, score: 1 | -1, comment: string) {
       :current-id="store.currentSessionId"
       @create="store.newSession()"
       @open="store.openSession($event)"
+      @rename="(id, title) => store.renameSession(id, title)"
+      @delete="store.deleteSession($event)"
     />
 
     <main class="flex min-w-0 flex-1 flex-col gap-3">
@@ -67,37 +73,13 @@ function onFeedback(msg: ChatMessage, score: 1 | -1, comment: string) {
         </div>
 
         <div class="ml-auto flex items-center gap-2">
-          <!-- 文档筛选 -->
-          <div class="relative">
-            <button
-              class="flex h-9 items-center gap-1.5 rounded-xl border border-muted bg-white/80 px-3 text-[13px] text-ink transition-all hover:border-primary/40 hover:text-primary cursor-pointer"
-              @click="docMenuOpen = !docMenuOpen"
-            >
-              <BookMarked :size="14" />
-              <span class="max-w-[160px] truncate">
-                {{ DOC_OPTIONS.find((o) => o.value === store.docFilter)?.label ?? '全部手册' }}
-              </span>
-              <ChevronDown :size="13" class="transition-transform" :class="{ 'rotate-180': docMenuOpen }" />
-            </button>
-            <div
-              v-show="docMenuOpen"
-              class="msg-enter absolute right-0 top-11 z-30 w-56 overflow-hidden rounded-xl border border-muted bg-white shadow-glass"
-            >
-              <button
-                v-for="o in DOC_OPTIONS"
-                :key="o.label"
-                class="flex w-full px-3.5 py-2.5 text-left text-[13px] transition-colors cursor-pointer"
-                :class="
-                  o.value === store.docFilter
-                    ? 'bg-primary/8 text-primary font-medium'
-                    : 'text-ink hover:bg-muted'
-                "
-                @click="selectDoc(o.value)"
-              >
-                {{ o.label }}
-              </button>
-            </div>
-          </div>
+          <button
+            class="flex h-9 cursor-pointer items-center gap-1.5 rounded-xl border border-muted bg-white/80 px-3 text-[13px] text-ink transition-all hover:border-primary/40 hover:text-primary"
+            @click="openAdmin"
+          >
+            <Settings :size="14" />
+            <span>管理系统</span>
+          </button>
 
           <div class="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-primary/15 to-primary/5 text-[12px] font-semibold text-primary">
             用
@@ -128,6 +110,7 @@ function onFeedback(msg: ChatMessage, score: 1 | -1, comment: string) {
           :generating="store.generating"
           @clarify-submit="onClarifySubmit"
           @feedback="onFeedback"
+          @delete="onMessageDelete"
         />
       </div>
 

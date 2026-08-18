@@ -171,6 +171,7 @@ async def test_steps_persisted(service):
     sessions.save_message = AsyncMock()
     sessions.log_intents = AsyncMock()
     sessions.log_retrievals = AsyncMock()
+    sessions.log_llm_call = AsyncMock()
     sessions.get_clarify_state = AsyncMock(return_value=None)
     sessions.save_clarify_state = AsyncMock()
     sessions.get_messages = AsyncMock(return_value=[])
