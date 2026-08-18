@@ -1,0 +1,2 @@
+# 保证 git hook 脚本在 Windows 上以 LF 换行签出，否则 shebang 失效
+.githooks/* text eol=lf

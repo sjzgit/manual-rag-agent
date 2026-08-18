@@ -1,0 +1,20 @@
+#!/bin/sh
+# 每次提交前将 AGENTS.md 同步为 README.md，保证仓库根目录始终有 README 且与 AGENTS.md 一致。
+
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+SRC="$ROOT/AGENTS.md"
+DST="$ROOT/README.md"
+
+# 无 AGENTS.md 时跳过
+[ -f "$SRC" ] || exit 0
+
+# 首行标题改写为项目名，其余内容与 AGENTS.md 完全一致
+{
+    printf '# 操作手册 RAG 项目\n'
+    sed '1d' "$SRC"
+} > "$DST"
+
+# 将生成/更新的 README.md 一并纳入本次提交
+git add "$DST"
