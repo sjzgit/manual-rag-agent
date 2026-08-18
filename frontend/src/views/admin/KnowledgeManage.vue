@@ -20,6 +20,9 @@ import type { ChunkItem, DocumentItem } from '../../types'
 const md = new MarkdownIt({ html: false, linkify: true })
 
 const documents = ref<DocumentItem[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(10)
 const loading = ref(false)
 const uploading = ref(false)
 let pollTimer: number | null = null
@@ -31,14 +34,26 @@ const hasActive = computed(() =>
 async function refresh() {
   loading.value = true
   try {
-    const data = await listDocuments()
+    const data = await listDocuments((page.value - 1) * pageSize.value, pageSize.value)
     documents.value = data.documents
+    total.value = data.total
   } catch (e) {
     ElMessage.error((e as Error).message)
   } finally {
     loading.value = false
     schedulePoll()
   }
+}
+
+function handlePageChange(p: number) {
+  page.value = p
+  refresh()
+}
+
+function handleSizeChange(s: number) {
+  pageSize.value = s
+  page.value = 1
+  refresh()
 }
 
 function schedulePoll() {
@@ -199,6 +214,18 @@ onUnmounted(() => {
         </template>
       </el-table-column>
     </el-table>
+
+    <el-pagination
+      v-if="total > 0"
+      class="justify-end"
+      layout="total, sizes, prev, pager, next"
+      :total="total"
+      :current-page="page"
+      :page-size="pageSize"
+      :page-sizes="[10, 20, 50]"
+      @current-change="handlePageChange"
+      @size-change="handleSizeChange"
+    />
 
     <!-- 预览对话框（全屏） -->
     <el-dialog

@@ -8,6 +8,8 @@ import SessionDetailDrawer from './SessionDetailDrawer.vue'
 
 const sessions = ref<AdminSessionItem[]>([])
 const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
 const loading = ref(false)
 
 const drawerVisible = ref(false)
@@ -16,7 +18,7 @@ const selectedSessionId = ref('')
 async function refresh() {
   loading.value = true
   try {
-    const data = await listAdminSessions(0, 100)
+    const data = await listAdminSessions((page.value - 1) * pageSize.value, pageSize.value)
     sessions.value = data.sessions
     total.value = data.total
   } catch (e) {
@@ -24,6 +26,17 @@ async function refresh() {
   } finally {
     loading.value = false
   }
+}
+
+function handlePageChange(p: number) {
+  page.value = p
+  refresh()
+}
+
+function handleSizeChange(s: number) {
+  pageSize.value = s
+  page.value = 1
+  refresh()
 }
 
 function openDetail(row: AdminSessionItem) {
@@ -53,6 +66,18 @@ onMounted(refresh)
         </template>
       </el-table-column>
     </el-table>
+
+    <el-pagination
+      v-if="total > 0"
+      class="justify-end"
+      layout="total, sizes, prev, pager, next"
+      :total="total"
+      :current-page="page"
+      :page-size="pageSize"
+      :page-sizes="[10, 20, 50, 100]"
+      @current-change="handlePageChange"
+      @size-change="handleSizeChange"
+    />
 
     <SessionDetailDrawer v-model="drawerVisible" :session-id="selectedSessionId" />
   </div>

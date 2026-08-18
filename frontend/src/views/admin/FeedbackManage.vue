@@ -25,6 +25,8 @@ type TagType = 'success' | 'warning' | 'danger' | 'info' | 'primary'
 // ---------- 反馈列表 ----------
 const feedbacks = ref<FeedbackItem[]>([])
 const feedbackTotal = ref(0)
+const feedbackPage = ref(1)
+const feedbackPageSize = ref(20)
 const feedbackLoading = ref(false)
 const selectedFeedbacks = ref<FeedbackItem[]>([])
 const feedbackTableRef = ref()
@@ -36,7 +38,10 @@ function scoreTag(score: number): { text: string; type: TagType } {
 async function refreshFeedbacks() {
   feedbackLoading.value = true
   try {
-    const data = await listAdminFeedbacks(0, 100)
+    const data = await listAdminFeedbacks(
+      (feedbackPage.value - 1) * feedbackPageSize.value,
+      feedbackPageSize.value,
+    )
     feedbacks.value = data.feedbacks
     feedbackTotal.value = data.total
   } catch (e) {
@@ -44,6 +49,17 @@ async function refreshFeedbacks() {
   } finally {
     feedbackLoading.value = false
   }
+}
+
+function handleFeedbackPageChange(p: number) {
+  feedbackPage.value = p
+  refreshFeedbacks()
+}
+
+function handleFeedbackSizeChange(s: number) {
+  feedbackPageSize.value = s
+  feedbackPage.value = 1
+  refreshFeedbacks()
 }
 
 function onSelectionChange(rows: FeedbackItem[]) {
@@ -58,6 +74,8 @@ function clearSelection() {
 // ---------- 工单列表 ----------
 const tickets = ref<TicketItem[]>([])
 const ticketTotal = ref(0)
+const ticketPage = ref(1)
+const ticketPageSize = ref(20)
 const ticketLoading = ref(false)
 
 const statusTag: Record<TicketStatus, { text: string; type: TagType }> = {
@@ -76,7 +94,10 @@ const priorityTag: Record<TicketPriority, { text: string; type: TagType }> = {
 async function refreshTickets() {
   ticketLoading.value = true
   try {
-    const data = await listAdminTickets(0, 100)
+    const data = await listAdminTickets(
+      (ticketPage.value - 1) * ticketPageSize.value,
+      ticketPageSize.value,
+    )
     tickets.value = data.tickets
     ticketTotal.value = data.total
   } catch (e) {
@@ -84,6 +105,17 @@ async function refreshTickets() {
   } finally {
     ticketLoading.value = false
   }
+}
+
+function handleTicketPageChange(p: number) {
+  ticketPage.value = p
+  refreshTickets()
+}
+
+function handleTicketSizeChange(s: number) {
+  ticketPageSize.value = s
+  ticketPage.value = 1
+  refreshTickets()
 }
 
 // ---------- 会话详情抽屉 ----------
@@ -302,6 +334,18 @@ onMounted(() => {
               </template>
             </el-table-column>
           </el-table>
+
+          <el-pagination
+            v-if="feedbackTotal > 0"
+            class="justify-end"
+            layout="total, sizes, prev, pager, next"
+            :total="feedbackTotal"
+            :current-page="feedbackPage"
+            :page-size="feedbackPageSize"
+            :page-sizes="[10, 20, 50, 100]"
+            @current-change="handleFeedbackPageChange"
+            @size-change="handleFeedbackSizeChange"
+          />
         </div>
       </el-tab-pane>
 
@@ -338,6 +382,18 @@ onMounted(() => {
               </template>
             </el-table-column>
           </el-table>
+
+          <el-pagination
+            v-if="ticketTotal > 0"
+            class="justify-end"
+            layout="total, sizes, prev, pager, next"
+            :total="ticketTotal"
+            :current-page="ticketPage"
+            :page-size="ticketPageSize"
+            :page-sizes="[10, 20, 50, 100]"
+            @current-change="handleTicketPageChange"
+            @size-change="handleTicketSizeChange"
+          />
         </div>
       </el-tab-pane>
     </el-tabs>
