@@ -56,8 +56,11 @@ export async function uploadDocument(file: File): Promise<DocumentItem> {
   return resp.json()
 }
 
-export function listDocuments(): Promise<{ documents: DocumentItem[] }> {
-  return get('/documents')
+export function listDocuments(
+  offset = 0,
+  limit = 50,
+): Promise<{ documents: DocumentItem[]; total: number }> {
+  return get(`/documents?offset=${offset}&limit=${limit}`)
 }
 
 export function getDocument(id: string): Promise<DocumentItem> {

@@ -56,8 +56,8 @@ async def upload_document(request: Request, file: UploadFile):
 
 
 @router.get("")
-async def list_documents(request: Request):
-    return {"documents": await _svc(request).list_documents()}
+async def list_documents(request: Request, offset: int = 0, limit: int = 50):
+    return await _svc(request).list_documents(offset, limit)
 
 
 @router.get("/{doc_id}")

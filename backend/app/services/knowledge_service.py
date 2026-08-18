@@ -8,7 +8,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.core.config import Settings
 from app.core.logging import get_logger
@@ -135,27 +135,36 @@ class KnowledgeService:
 
     # ---------- 查询 ----------
 
-    async def list_documents(self) -> list[dict]:
+    async def list_documents(self, offset: int = 0, limit: int = 50) -> dict:
         if not self.db.available:
-            return []
+            return {"documents": [], "total": 0}
         async with self.db.session() as s:
+            total = (
+                await s.execute(select(func.count()).select_from(SourceDocument))
+            ).scalar_one()
             rows = (
                 await s.execute(
-                    select(SourceDocument).order_by(SourceDocument.created_at.desc())
+                    select(SourceDocument)
+                    .order_by(SourceDocument.created_at.desc())
+                    .offset(offset)
+                    .limit(limit)
                 )
             ).scalars()
-            return [
-                {
-                    "id": r.id,
-                    "doc_name": r.doc_name,
-                    "file_size": r.file_size,
-                    "status": r.status,
-                    "error_message": r.error_message,
-                    "chunk_count": r.chunk_count,
-                    "created_at": r.created_at.isoformat() if r.created_at else None,
-                }
-                for r in rows
-            ]
+            return {
+                "documents": [
+                    {
+                        "id": r.id,
+                        "doc_name": r.doc_name,
+                        "file_size": r.file_size,
+                        "status": r.status,
+                        "error_message": r.error_message,
+                        "chunk_count": r.chunk_count,
+                        "created_at": r.created_at.isoformat() if r.created_at else None,
+                    }
+                    for r in rows
+                ],
+                "total": total,
+            }
 
     async def get_document(self, doc_id: str) -> dict | None:
         doc = await self._get_document(doc_id)

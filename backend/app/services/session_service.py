@@ -112,18 +112,18 @@ class SessionService:
             logger.warning("delete_messages_failed", error=str(e))
             return False
 
-    async def get_messages(self, session_id: str, limit: int = 50) -> list[dict]:
+    async def get_messages(self, session_id: str, limit: int | None = None) -> list[dict]:
         if not self.db.available:
             return []
         async with self.db.session() as s:
-            rows = (
-                await s.execute(
-                    select(Message)
-                    .where(Message.session_id == session_id)
-                    .order_by(Message.created_at)
-                    .limit(limit)
-                )
-            ).scalars()
+            stmt = (
+                select(Message)
+                .where(Message.session_id == session_id)
+                .order_by(Message.created_at)
+            )
+            if limit is not None:
+                stmt = stmt.limit(limit)
+            rows = (await s.execute(stmt)).scalars()
             return [
                 {
                     "id": r.id,

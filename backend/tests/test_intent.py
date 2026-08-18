@@ -276,8 +276,8 @@ async def test_llm_history_passed(recognizer, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_llm_history_truncation(recognizer, monkeypatch):
-    """_chat 注入历史时：超过条数/长度应截断，且始终以当前问题收尾。"""
+async def test_llm_history_full_injection(recognizer, monkeypatch):
+    """_chat 注入历史时：全部历史完整注入（不截断条数与长度），且始终以当前问题收尾。"""
     monkeypatch.setattr(recognizer.settings, "intent_llm_api_key", "test-key")
     captured: dict = {}
 
@@ -314,4 +314,4 @@ async def test_llm_history_truncation(recognizer, monkeypatch):
     assert messages[-1] == {"role": "user", "content": "当前问题"}
     hist_msgs = messages[1:-1]
     assert len(hist_msgs) == 3
-    assert all(len(m["content"]) == 500 for m in hist_msgs)
+    assert [m["content"] for m in hist_msgs] == ["x" * 1000, "y" * 1000, "z" * 1000]

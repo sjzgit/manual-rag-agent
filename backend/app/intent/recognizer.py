@@ -124,14 +124,12 @@ class IntentRecognizer:
         s = self.settings
         messages: list[dict] = [{"role": "system", "content": system}]
         if history:
-            # 注入最近的历史轮次（截断防超长），当前问题置于最后
-            for msg in history[-self._HISTORY_LIMIT:]:
+            # 注入全部历史（按正序），当前问题置于最后；暂不截断，上下文管理后续处理
+            for msg in history:
                 role = msg.get("role")
                 content = (msg.get("content") or "").strip()
                 if role in ("user", "assistant") and content:
-                    messages.append(
-                        {"role": role, "content": content[: self._HISTORY_MAX_CHARS]}
-                    )
+                    messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user})
         payload: dict = {
             "model": s.intent_llm_model,
@@ -201,9 +199,6 @@ class IntentRecognizer:
 
     # ---------- 规则降级路径（小模型未配置时） ----------
 
-    # 历史注入限制
-    _HISTORY_LIMIT = 6  # 最多注入最近 6 条历史消息
-    _HISTORY_MAX_CHARS = 500  # 单条历史截断长度
     # 闲聊/礼貌语（此类输入即使有历史模块上下文，也不强行继承，保持拒答）
     _CHITCHAT_WORDS = (
         "你好", "您好", "你好呀", "嗨", "hello", "hi",

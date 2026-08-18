@@ -305,7 +305,7 @@ class ChatService:
     async def _history(self, session_id: str) -> list[dict]:
         if not self.sessions:
             return []
-        rows = await self.sessions.get_messages(session_id, limit=10)
+        rows = await self.sessions.get_messages(session_id)
         return [{"role": r["role"], "content": r["content"]} for r in rows]
 
     @staticmethod
