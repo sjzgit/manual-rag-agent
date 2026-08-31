@@ -114,5 +114,6 @@
   // 编辑器通用
   "editor.rulers": [100],
   "editor.bracketPairColorization.enabled": true,
-  "editor.guides.bracketPairs": "active"
+  "editor.guides.bracketPairs": "active",
+  "claudeCode.preferredLocation": "sidebar"
 }

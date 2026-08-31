@@ -30,6 +30,12 @@ async def chat(req: ChatRequest, request: Request):
 async def health(request: Request):
     settings = request.app.state.settings
     retriever = request.app.state.retriever
+    if not settings.enable_keyword_search:
+        keyword_search = "off"
+    elif retriever.sparse_ready:
+        keyword_search = "on"
+    else:
+        keyword_search = "no-sparse-field"
     return {
         "status": "ok",
         "collection": settings.milvus_collection,
@@ -37,4 +43,6 @@ async def health(request: Request):
         "intent_llm": "configured" if settings.intent_llm_configured else "rule-fallback",
         "llm": "configured" if settings.llm_configured else "missing-key",
         "rag_mode": settings.rag_mode,
+        "keyword_search": keyword_search,
+        "rerank": "configured" if settings.rerank_configured else "missing-key",
     }

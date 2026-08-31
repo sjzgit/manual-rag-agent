@@ -12,10 +12,27 @@ export interface IntentResult {
   intent_reason: string
 }
 
+/** 检索 step 事件 detail 中的命中条目（混合检索扩展字段为可选，纯稠密链路为 null） */
+export interface RetrieveHit {
+  chunk_id: string
+  doc: string
+  path: string
+  score: number
+  dense_score?: number | null
+  sparse_score?: number | null
+  fused_score?: number | null
+  rerank_score?: number | null
+  sparse_rank?: number | null
+}
+
 export interface StepEvent {
   type: 'intent' | 'retrieve' | 'thinking' | 'tool_call'
   title: string
-  detail: Record<string, any>
+  detail: Record<string, any> & {
+    /** retrieve step 扩展：检索模式与命中列表 */
+    mode?: 'dense' | 'hybrid' | 'hybrid-rerank'
+    hits?: RetrieveHit[]
+  }
 }
 
 export interface SourceChunk {
@@ -112,6 +129,9 @@ export interface AdminSessionDetail {
   }[]
 }
 
+/** 检索日志阶段 */
+export type RetrievalStage = 'dense' | 'sparse' | 'fused' | 'final'
+
 export interface SessionLogs {
   intent_logs: {
     id: number
@@ -130,6 +150,13 @@ export interface SessionLogs {
     doc: string
     path: string
     score: number
+    dense_score: number | null
+    sparse_score: number | null
+    fused_score: number | null
+    rerank_score: number | null
+    mode: 'dense' | 'hybrid' | 'hybrid-rerank'
+    stage: RetrievalStage
+    hit_rank: number
     created_at: string | null
   }[]
   llm_call_logs: LlmCallLog[]

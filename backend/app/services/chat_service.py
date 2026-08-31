@@ -44,6 +44,7 @@ class ChatService:
         redis=None,
         agentic=None,
         prompt_service=None,
+        reranker=None,
     ):
         self.settings = settings
         self.retriever = retriever
@@ -53,6 +54,7 @@ class ChatService:
         self.redis = redis
         self.agentic = agentic
         self.prompt_service = prompt_service
+        self.reranker = reranker
 
     def _prompt(self, key: str, default: str) -> str:
         """从提示词服务取模板，未注入时回退代码常量。"""
@@ -148,6 +150,7 @@ class ChatService:
                     async for chunk in self._answer_flow(
                         session_id, question, vague, req.doc, message_id, steps=steps,
                         prefix=self._prompt("clarify_exhausted_prefix", CLARIFY_EXHAUSTED_PREFIX),
+                        history=history,
                     ):
                         yield chunk
                     return
@@ -167,7 +170,8 @@ class ChatService:
             # 4) 全部精确 → 检索 + 回答
             await self._set_clarify_state(session_id, None)
             async for chunk in self._answer_flow(
-                session_id, question, batch.precise_intents, req.doc, message_id, steps=steps
+                session_id, question, batch.precise_intents, req.doc, message_id, steps=steps,
+                history=history,
             ):
                 yield chunk
 
@@ -186,29 +190,47 @@ class ChatService:
         message_id: str,
         steps: list[dict],
         prefix: str = "",
+        history: list[dict] | None = None,
     ) -> AsyncGenerator[str]:
-        # 逐子问题检索（top_k=2）
-        yield _step_payload(steps, "retrieve", "向量检索中…")
+        # 逐子问题混合检索 + 重排
+        yield _step_payload(steps, "retrieve", "混合检索中…")
         all_hits: list[SearchResult] = []
         seen: set[str] = set()
         for intent in intents:
             q = intent.simple_input or intent.input
-            hits = await self.retriever.search(q, doc=doc_filter)
-            hits = self.retriever.filter_by_threshold(hits)
+            outcome = await self.retriever.search_and_rerank(
+                q, doc=doc_filter, reranker=self.reranker
+            )
+            hits, mode = outcome.final_hits, outcome.mode
+            title = "混合检索+重排" if mode == "hybrid-rerank" else (
+                "混合检索" if mode == "hybrid" else "向量检索"
+            )
             yield _step_payload(
                 steps,
                 "retrieve",
-                f"检索「{q}」",
+                f"{title}「{q}」",
                 {
                     "sub_question": q,
-                    "hits": [
-                        {"chunk_id": h.chunk_id, "doc": h.doc, "path": h.path, "score": round(h.score, 4)}
-                        for h in hits
-                    ],
+                    "mode": mode,
+                    "hits": [self._hit_summary(h) for h in hits],
                 },
             )
             if self.sessions:
-                await self.sessions.log_retrievals(session_id, message_id, q, hits)
+                # 分阶段落库：稠密路 / 稀疏路 / RRF 融合 / 最终结果（各为独立列表）
+                await self.sessions.log_retrievals(
+                    session_id, message_id, q, outcome.dense_hits, mode, stage="dense"
+                )
+                if outcome.sparse_hits:
+                    await self.sessions.log_retrievals(
+                        session_id, message_id, q, outcome.sparse_hits, mode, stage="sparse"
+                    )
+                if outcome.fused_hits:
+                    await self.sessions.log_retrievals(
+                        session_id, message_id, q, outcome.fused_hits, mode, stage="fused"
+                    )
+                await self.sessions.log_retrievals(
+                    session_id, message_id, q, outcome.final_hits, mode, stage="final"
+                )
             for h in hits:
                 if h.chunk_id not in seen:
                     seen.add(h.chunk_id)
@@ -216,11 +238,25 @@ class ChatService:
 
         # 无命中 → 未找到
         if not all_hits:
+            logger.info(
+                "retrieval_no_hits",
+                session_id=session_id,
+                message_id=message_id,
+                question=question,
+            )
             not_found = self._prompt("not_found_reply", NOT_FOUND_REPLY)
             yield sse.token(not_found)
             await self._save_assistant(session_id, message_id, not_found, None, steps)
             yield sse.done(message_id)
             return
+
+        logger.info(
+            "retrieval_hits",
+            session_id=session_id,
+            message_id=message_id,
+            question=question,
+            num_hits=len(all_hits),
+        )
 
         # LLM 流式生成
         yield _step_payload(steps, "thinking", "生成回答中…")
@@ -231,8 +267,7 @@ class ChatService:
         if self.agentic is not None:
             # Agentic 模式：Agent 自主调用 search_manual 工具
             yield _step_payload(steps, "tool_call", "Agent 自主检索模式")
-            history = await self._history(session_id)
-            async for text in self.agentic.stream_answer(question, history):
+            async for text in self.agentic.stream_answer(question, history or []):
                 full_text += text
                 yield sse.token(text)
             if self.sessions:
@@ -247,15 +282,29 @@ class ChatService:
                     full_text,
                 )
         else:
-            # Generic 模式：固定注入检索上下文
+            # Generic 模式：固定注入检索上下文 + 会话历史
             context = self.retriever.build_context(all_hits)
             system = self._prompt("answer_system", ANSWER_SYSTEM_PROMPT).format(
                 context=context
             )
-            messages = [{"role": "user", "content": question}]
+            messages = [*(history or []), {"role": "user", "content": question}]
             async for text in self.agent.stream_answer(system, messages):
                 full_text += text
                 yield sse.token(text)
+            logger.info(
+                "answer_generated",
+                session_id=session_id,
+                message_id=message_id,
+                context_len=len(context),
+                answer_len=len(full_text),
+            )
+            if not full_text.strip():
+                logger.warning(
+                    "answer_empty",
+                    session_id=session_id,
+                    message_id=message_id,
+                    context_len=len(context),
+                )
             if self.sessions:
                 await self.sessions.log_llm_call(
                     session_id, message_id, "answer", system, messages, full_text
@@ -271,6 +320,25 @@ class ChatService:
         yield sse.done(message_id)
 
     # ---------- 辅助 ----------
+
+    @staticmethod
+    def _hit_summary(h: SearchResult) -> dict:
+        """命中结果 → step 事件 detail 摘要（分数 round 4 位，可 null）。"""
+        return {
+            "chunk_id": h.chunk_id,
+            "doc": h.doc,
+            "path": h.path,
+            "score": round(h.score, 4),
+            "dense_score": round(h.dense_score, 4) if h.dense_score is not None else None,
+            "sparse_score": (
+                round(h.sparse_score, 4) if h.sparse_score is not None else None
+            ),
+            "fused_score": round(h.fused_score, 4) if h.fused_score is not None else None,
+            "rerank_score": (
+                round(h.rerank_score, 4) if h.rerank_score is not None else None
+            ),
+            "sparse_rank": h.sparse_rank,
+        }
 
     async def _get_clarify_state(self, session_id: str) -> ClarifyState | None:
         if self.sessions:

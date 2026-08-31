@@ -107,8 +107,11 @@ class KnowledgeService:
             return
         try:
             await self.retriever.ensure_child_collection()
+            # 先 reload 再编码：父子映射与 BM25 统计已含新切片，消除写入期 idf 过期
+            await self.retriever.reload()
             texts = [clean_for_embedding(s.content) for s in children]
             vectors = await self.retriever.embed(texts)
+            sparse = await asyncio.to_thread(self.retriever.encode_sparse_sync, texts)
             rows = [
                 {
                     "id": s.id,
@@ -117,6 +120,7 @@ class KnowledgeService:
                     "parent_id": s.parent_id or "",
                     "content": clean_for_embedding(s.content),
                     "vector": vectors[i],
+                    "sparse_vector": sparse[i],
                 }
                 for i, s in enumerate(children)
             ]

@@ -22,6 +22,8 @@
 # 后端（依赖在 pyproject.toml，无 requirements.txt）
 cd backend
 pip install -e ".[dev]"
+python -m app.main
+或
 uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload   # 本地开发端口 8001（vite 代理指向它）
 
 # 前端

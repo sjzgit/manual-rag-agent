@@ -237,12 +237,18 @@ class SessionService:
         message_id: str,
         sub_question: str,
         hits: list[SearchResult],
+        mode: str = "dense",
+        stage: str = "final",
     ) -> None:
+        """记录一个检索阶段的命中列表（stage：dense/sparse/fused/final）。
+
+        同一子问题按阶段多次调用（稀疏路未启用时仅 final 一阶段）。
+        """
         if not self.db.available:
             return
         try:
             async with self.db.session() as s:
-                for h in hits:
+                for rank, h in enumerate(hits, 1):
                     s.add(
                         RetrievalLog(
                             session_id=session_id,
@@ -252,6 +258,13 @@ class SessionService:
                             doc=h.doc,
                             path=h.path,
                             score=h.score,
+                            dense_score=h.dense_score,
+                            sparse_score=h.sparse_score,
+                            fused_score=h.fused_score,
+                            rerank_score=h.rerank_score,
+                            mode=mode,
+                            stage=stage,
+                            hit_rank=rank,
                         )
                     )
                 await s.commit()

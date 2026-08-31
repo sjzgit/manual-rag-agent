@@ -1,4 +1,5 @@
 """FastAPI 入口：lifespan 初始化全局单例，注册路由。"""
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -18,6 +19,7 @@ from app.core.logging import get_logger, setup_logging
 from app.db.session import Database
 from app.intent.recognizer import IntentRecognizer
 from app.rag import retriever as retriever_module
+from app.rag.reranker import SiliconFlowReranker
 from app.rag.retriever import ManualRetriever
 from app.services.cache import RedisService
 from app.services.chat_service import ChatService
@@ -32,6 +34,9 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    if settings.hf_offline:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
     setup_logging(settings.debug)
     app.state.settings = settings
 
@@ -52,6 +57,10 @@ async def lifespan(app: FastAPI):
     await retriever.startup()
     retriever_module.set_retriever(retriever)
     app.state.retriever = retriever
+
+    reranker = SiliconFlowReranker(settings)
+    await reranker.startup()
+    app.state.reranker = reranker
 
     knowledge = KnowledgeService(settings, db, retriever)
     app.state.knowledge = knowledge
@@ -79,6 +88,7 @@ async def lifespan(app: FastAPI):
         redis_service,
         agentic,
         prompt_service,
+        reranker,
     )
 
     logger.info(
@@ -86,12 +96,15 @@ async def lifespan(app: FastAPI):
         rag_mode=settings.rag_mode,
         intent_llm=settings.intent_llm_configured,
         llm=settings.llm_configured,
+        rerank=settings.rerank_configured,
+        keyword_search=settings.enable_keyword_search,
         mysql=db.available,
         redis=redis_service.available,
     )
 
     yield
 
+    await reranker.shutdown()
     await retriever.shutdown()
     await db.shutdown()
     await redis_service.shutdown()
@@ -124,3 +137,10 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    # 本地开发入口：端口 8001 与 vite 代理一致；生产走 Docker（8000），不经过此入口。
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=True)

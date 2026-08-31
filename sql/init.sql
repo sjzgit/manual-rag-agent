@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS intent_logs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='意图识别日志表';
 
 -- ----------------------------------------------------------------------------
--- 检索日志表：记录每次向量检索命中的切片
+-- 检索日志表：记录每次检索命中的切片（混合检索：各路分数 + 分阶段列表落库）
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS retrieval_logs (
     id           INT          NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '日志自增ID',
@@ -102,9 +102,17 @@ CREATE TABLE IF NOT EXISTS retrieval_logs (
     chunk_id     VARCHAR(512) NOT NULL COMMENT '命中的向量切片ID（对应 chunks.json 中的 chunk id）',
     doc          VARCHAR(256) NOT NULL COMMENT '切片所属文档名',
     path         VARCHAR(1024) NOT NULL COMMENT '切片在文档中的路径（章节层级）',
-    score        DOUBLE       NOT NULL COMMENT '检索相似度得分',
+    score        DOUBLE       NOT NULL COMMENT '最终展示分（rerank 优先，否则稠密/稀疏原始分）',
+    dense_score  DOUBLE       NULL COMMENT '稠密路 COSINE 原始分（纯稀疏命中为 NULL）',
+    sparse_score DOUBLE       NULL COMMENT '稀疏路 BM25 原始分（内积，纯稠密命中为 NULL）',
+    fused_score  DOUBLE       NULL COMMENT '加权 RRF 融合分（单路未融合时为 NULL）',
+    rerank_score DOUBLE       NULL COMMENT '重排相关度分（0~1，未重排/降级时为 NULL）',
+    mode         VARCHAR(16)  NOT NULL DEFAULT 'dense' COMMENT '检索模式：dense=纯稠密，hybrid=混合，hybrid-rerank=混合+重排',
+    stage        VARCHAR(16)  NOT NULL DEFAULT 'final' COMMENT '命中阶段：dense=语义检索，sparse=关键词检索，fused=RRF 融合（父代表），final=rerank 最终结果',
+    hit_rank     INT          NOT NULL DEFAULT 1 COMMENT '该阶段内排名（从 1 起）',
     created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录时间',
-    INDEX idx_session_retrieval (session_id) COMMENT '按会话查询检索日志的索引'
+    INDEX idx_session_retrieval (session_id) COMMENT '按会话查询检索日志的索引',
+    INDEX idx_session_stage (session_id, stage) COMMENT '按会话+阶段查询检索日志的索引'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='检索日志表';
 
 -- ----------------------------------------------------------------------------

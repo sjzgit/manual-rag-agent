@@ -67,7 +67,16 @@ class RetrievalLog(Base):
     chunk_id: Mapped[str] = mapped_column(String(512))
     doc: Mapped[str] = mapped_column(String(256))
     path: Mapped[str] = mapped_column(String(1024))
-    score: Mapped[float] = mapped_column()
+    score: Mapped[float] = mapped_column()  # 最终展示分（rerank 优先）
+    # ---- 混合检索扩展（V005，旧数据为 NULL） ----
+    dense_score: Mapped[float | None] = mapped_column(nullable=True)
+    sparse_score: Mapped[float | None] = mapped_column(nullable=True)
+    fused_score: Mapped[float | None] = mapped_column(nullable=True)
+    rerank_score: Mapped[float | None] = mapped_column(nullable=True)
+    mode: Mapped[str] = mapped_column(String(16), default="dense")  # dense | hybrid | hybrid-rerank
+    # ---- 分阶段记录（V006）：同一子问题的各阶段命中列表 ----
+    stage: Mapped[str] = mapped_column(String(16), default="final")  # dense | sparse | fused | final
+    hit_rank: Mapped[int] = mapped_column(Integer, default=1)  # 该阶段内的排名（从 1 起）
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

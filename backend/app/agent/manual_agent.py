@@ -36,6 +36,8 @@ class ManualAnswerAgent:
         url = f"{s.llm_base_url.rstrip('/')}/chat/completions"
         headers = {"Authorization": f"Bearer {s.llm_api_key}"}
 
+        total = 0
+        chunks = 0
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0)) as client:
             async with client.stream("POST", url, json=payload, headers=headers) as resp:
                 resp.raise_for_status()
@@ -52,6 +54,16 @@ class ManualAnswerAgent:
                         delta = chunk["choices"][0].get("delta", {})
                         text = delta.get("content")
                         if text:
+                            total += len(text)
                             yield text
                     except (ValueError, KeyError, IndexError):
                         continue
+                    chunks += 1
+        logger.info(
+            "llm_stream_done",
+            model=s.llm_model,
+            chunks=chunks,
+            total_chars=total,
+        )
+        if total == 0:
+            logger.warning("llm_stream_empty", model=s.llm_model, url=url)

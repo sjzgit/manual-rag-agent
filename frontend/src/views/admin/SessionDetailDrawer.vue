@@ -83,6 +83,83 @@ function stepHits(step: StepEvent) {
   return (step.detail?.hits ?? []) as Array<{ doc: string; path: string; score: number }>
 }
 
+// ---------- 检索日志分阶段展示 ----------
+interface RetrievalRow {
+  id: number
+  sub_question: string
+  doc: string
+  path: string
+  score: number
+  dense_score: number | null
+  sparse_score: number | null
+  fused_score: number | null
+  rerank_score: number | null
+  mode: string
+  stage: string
+  hit_rank: number
+}
+
+/** 子问题分组：同一子问题的四阶段日志归为一组（旧数据无 stage 视为 final） */
+const retrievalGroups = computed<{ subQuestion: string; byStage: Record<string, RetrievalRow[]> }[]>(() => {
+  const rows = (logs.value?.retrieval_logs ?? []) as RetrievalRow[]
+  const groups: { subQuestion: string; byStage: Record<string, RetrievalRow[]> }[] = []
+  const index = new Map<string, number>()
+  for (const r of rows) {
+    const key = r.sub_question
+    if (!index.has(key)) {
+      index.set(key, groups.length)
+      groups.push({ subQuestion: key, byStage: {} })
+    }
+    const g = groups[index.get(key)!]
+    const stage = r.stage || 'final'
+    ;(g.byStage[stage] ??= []).push(r)
+  }
+  // 各阶段按落库顺序（hit_rank 已随插入顺序递增）保持原序
+  return groups
+})
+
+/** 检索分组折叠状态：默认全部展开 */
+const expandedRetrieval = ref<Set<string>>(new Set())
+
+function toggleRetrieval(subQuestion: string) {
+  const s = new Set(expandedRetrieval.value)
+  if (s.has(subQuestion)) s.delete(subQuestion)
+  else s.add(subQuestion)
+  expandedRetrieval.value = s
+}
+
+function isRetrievalExpanded(subQuestion: string): boolean {
+  // 首次渲染时 Set 为空，视为展开；仅当用户显式折叠后才收起
+  return !expandedRetrieval.value.has(subQuestion)
+}
+
+const stageMeta: Record<string, { label: string; scoreKey: keyof RetrievalRow; color: string }> = {
+  dense: { label: '语义检索', scoreKey: 'dense_score', color: 'bg-blue-500' },
+  sparse: { label: '关键词检索', scoreKey: 'sparse_score', color: 'bg-emerald-500' },
+  fused: { label: 'RRF 融合', scoreKey: 'fused_score', color: 'bg-violet-500' },
+  final: { label: 'Rerank 最终结果', scoreKey: 'rerank_score', color: 'bg-orange-500' },
+}
+const stageOrder = ['dense', 'sparse', 'fused', 'final'] as const
+
+const modeBadge: Record<string, { text: string; type: 'success' | 'warning' | 'info' }> = {
+  dense: { text: '纯语义', type: 'info' },
+  hybrid: { text: '混合', type: 'warning' },
+  'hybrid-rerank': { text: '混合+重排', type: 'success' },
+}
+
+function fmtScore(v: number | null | undefined): string {
+  return typeof v === 'number' ? v.toFixed(3) : '-'
+}
+
+/** 各阶段展示的得分文案：取该阶段的主分数，缺失时回退 score 列 */
+function stageScoreLabel(stage: string, row: RetrievalRow): string {
+  const key = stageMeta[stage].scoreKey
+  const v = row[key] as number | null
+  const prefix =
+    stage === 'dense' ? '相似度' : stage === 'sparse' ? 'BM25' : stage === 'fused' ? 'RRF' : '相关度'
+  return `${prefix} ${fmtScore(v ?? row.score)}`
+}
+
 // ---------- LLM 输入输出 ----------
 const llmDialogVisible = ref(false)
 const activeLlmLogs = ref<LlmCallLog[]>([])
@@ -226,14 +303,75 @@ function renderOutput(log: LlmCallLog) {
       </el-tab-pane>
 
       <el-tab-pane :label="`检索日志（${logs?.retrieval_logs.length ?? 0}）`" name="retrieval">
-        <el-table :data="logs?.retrieval_logs ?? []" size="small" border>
-          <el-table-column prop="sub_question" label="检索语句" min-width="160" />
-          <el-table-column prop="doc" label="手册" min-width="160" />
-          <el-table-column prop="path" label="路径" min-width="160" />
-          <el-table-column label="得分" width="80">
-            <template #default="{ row }">{{ row.score.toFixed(3) }}</template>
-          </el-table-column>
-        </el-table>
+        <div v-if="!retrievalGroups.length" class="py-8 text-center text-[13px] text-ink-sub">
+          暂无检索日志
+        </div>
+        <div v-for="(g, gi) in retrievalGroups" :key="gi" class="overflow-hidden rounded-xl border border-muted">
+          <button
+            class="flex w-full cursor-pointer items-center gap-2 px-3.5 py-2.5 text-left transition-colors hover:bg-muted/50"
+            @click="toggleRetrieval(g.subQuestion)"
+          >
+            <ChevronRight
+              :size="14"
+              class="shrink-0 text-ink-sub transition-transform"
+              :class="{ 'rotate-90': isRetrievalExpanded(g.subQuestion) }"
+            />
+            <span class="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
+              检索语句：{{ g.subQuestion }}
+            </span>
+            <span class="shrink-0 text-[11px] text-ink-sub">
+              {{ Object.values(g.byStage).reduce((n, rows) => n + rows.length, 0) }} 条
+            </span>
+          </button>
+
+          <div v-if="isRetrievalExpanded(g.subQuestion)" class="space-y-2 border-t border-muted px-3.5 py-3">
+            <div
+              v-for="stage in stageOrder"
+              :key="stage"
+              class="rounded-lg border border-muted px-2.5 py-2"
+            >
+              <template v-if="g.byStage[stage]?.length">
+                <div class="mb-1.5 flex items-center gap-2 text-[12px] font-medium text-ink">
+                  <span class="h-1.5 w-1.5 rounded-full" :class="stageMeta[stage].color" />
+                  <span>{{ stageMeta[stage].label }}</span>
+                  <span class="text-ink-sub">（{{ g.byStage[stage].length }} 条）</span>
+                  <el-tag
+                    v-if="stage === 'final'"
+                    :type="modeBadge[g.byStage[stage][0].mode]?.type ?? 'info'"
+                    size="small"
+                    class="ml-1"
+                  >
+                    {{ modeBadge[g.byStage[stage][0].mode]?.text ?? g.byStage[stage][0].mode }}
+                  </el-tag>
+                </div>
+                <div class="space-y-1">
+                  <div
+                    v-for="row in g.byStage[stage]"
+                    :key="row.id"
+                    class="flex items-center gap-2 rounded-lg bg-muted/70 px-2.5 py-1.5 text-[12px]"
+                  >
+                    <span class="w-5 shrink-0 text-right text-ink-sub">#{{ row.hit_rank }}</span>
+                    <span class="min-w-0 flex-1 truncate text-ink">{{ row.doc }} &gt; {{ row.path }}</span>
+                    <span class="flex shrink-0 items-center gap-1.5">
+                      <span
+                        v-if="row[stageMeta[stage].scoreKey] !== null"
+                        class="text-ink-sub"
+                      >
+                        {{ stageScoreLabel(stage, row) }}
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <div class="flex items-center gap-2 text-[12px] text-ink-sub/70">
+                  <span class="h-1.5 w-1.5 rounded-full bg-muted" />
+                  <span>{{ stageMeta[stage].label }}：未启用 / 无命中</span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
       </el-tab-pane>
 
       <el-tab-pane :label="`意图日志（${logs?.intent_logs.length ?? 0}）`" name="intent">
@@ -266,7 +404,7 @@ function renderOutput(log: LlmCallLog) {
       <el-tabs>
         <el-tab-pane label="输入">
           <div class="mb-2 text-[12px] font-medium text-ink">System Prompt</div>
-          <pre class="mb-3 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg bg-muted p-3 text-[12px] text-ink-sub">{{ log.system_prompt }}</pre>
+          <pre class="mb-3 whitespace-pre-wrap rounded-lg bg-muted p-3 text-[12px] text-ink-sub">{{ log.system_prompt }}</pre>
           <div class="mb-2 text-[12px] font-medium text-ink">Messages</div>
           <div class="space-y-1.5">
             <div

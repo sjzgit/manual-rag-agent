@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-settings>=2.3,<3",
     "pymilvus>=2.4,<2.5",
     "sentence-transformers>=3.0,<4",
+    "jieba>=0.42,<0.43",
     "agentscope>=2.0.5,<2.1",
     "structlog>=24.1,<25",
     "sqlalchemy[asyncio]>=2.0,<2.1",

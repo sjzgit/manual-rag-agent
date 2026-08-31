@@ -28,15 +28,34 @@ class Settings(BaseSettings):
     milvus_host: str = "192.168.0.215"
     milvus_port: str = "19530"
     milvus_collection: str = "manual_rag_chunks"
-    milvus_child_collection: str = "manual_rag_child_chunks"
+    milvus_child_collection: str = "manual_rag_child_chunks_v2"
 
     # ---- Embedding ----
     embed_model_name: str = "BAAI/bge-base-zh-v1.5"
+    # 本地模型缓存离线加载（不联网校验 etag）；换新模型需下载时临时设 false
+    hf_offline: bool = True
 
     # ---- 检索 ----
     retrieve_top_k: int = 8
     score_threshold: float = 0.4
     rag_mode: str = "generic"  # generic | agentic
+
+    # ---- 关键词检索（BM25 稀疏向量，混合检索） ----
+    enable_keyword_search: bool = True
+    bm25_k1: float = 1.5
+    bm25_b: float = 0.75
+    recall_top_k: int = 20  # 每路召回条数（融合候选池）
+    fusion_dense_weight: float = 0.7  # RRF 语义路权重
+    fusion_sparse_weight: float = 0.3  # RRF 关键词路权重
+    rrf_k: int = 60
+    keyword_pass_rank: int = 3  # 稀疏路免语义阈值的排名上限
+
+    # ---- 重排（SiliconFlow rerank） ----
+    rerank_top_n: int = 5
+    rerank_api_key: str = ""  # 留空则不重排，降级融合序
+    rerank_base_url: str = "https://api.siliconflow.cn/v1"
+    rerank_model: str = "Qwen/Qwen3-Reranker-8B"
+    rerank_timeout: float = 10.0
 
     # ---- 数据文件（只读） ----
     chunks_path: str = str(PROJECT_ROOT / "文档切片" / "chunks.json")
@@ -91,6 +110,10 @@ class Settings(BaseSettings):
     @property
     def llm_configured(self) -> bool:
         return bool(self.llm_api_key)
+
+    @property
+    def rerank_configured(self) -> bool:
+        return bool(self.rerank_api_key and self.rerank_base_url and self.rerank_model)
 
 
 @lru_cache

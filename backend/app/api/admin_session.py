@@ -131,6 +131,13 @@ async def get_session_logs(session_id: str, request: Request):
                     "doc": r.doc,
                     "path": r.path,
                     "score": r.score,
+                    "dense_score": r.dense_score,
+                    "sparse_score": r.sparse_score,
+                    "fused_score": r.fused_score,
+                    "rerank_score": r.rerank_score,
+                    "mode": r.mode,
+                    "stage": r.stage,
+                    "hit_rank": r.hit_rank,
                     "created_at": _dt(r.created_at),
                 }
                 for r in retrievals
