@@ -142,5 +142,6 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
 
-    # 本地开发入口：端口 8001 与 vite 代理一致；生产走 Docker（8000），不经过此入口。
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=True)
+    settings = get_settings()
+    # 本地开发入口：host/port 由 .env 控制（本地默认 8001 与 vite 代理一致）；生产走 Docker（8000），不经过此入口。
+    uvicorn.run("app.main:app", host=settings.host, port=settings.port, reload=True)

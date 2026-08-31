@@ -261,6 +261,7 @@ class ChatService:
         # LLM 流式生成
         yield _step_payload(steps, "thinking", "生成回答中…")
         full_text = prefix
+        reasoning_text = ""
         if prefix:
             yield sse.token(prefix)
 
@@ -288,9 +289,13 @@ class ChatService:
                 context=context
             )
             messages = [*(history or []), {"role": "user", "content": question}]
-            async for text in self.agent.stream_answer(system, messages):
-                full_text += text
-                yield sse.token(text)
+            async for kind, text in self.agent.stream_answer(system, messages):
+                if kind == "reasoning":
+                    reasoning_text += text
+                    yield sse.reasoning(text)
+                else:
+                    full_text += text
+                    yield sse.token(text)
             logger.info(
                 "answer_generated",
                 session_id=session_id,
@@ -315,7 +320,9 @@ class ChatService:
             self.retriever.to_source_chunk(h) for h in all_hits
         ]
         source_dicts = [s.model_dump() for s in source_chunks]
-        await self._save_assistant(session_id, message_id, full_text, source_dicts, steps)
+        await self._save_assistant(
+            session_id, message_id, full_text, source_dicts, steps, reasoning=reasoning_text
+        )
         yield sse.sources(source_dicts)
         yield sse.done(message_id)
 
@@ -364,10 +371,12 @@ class ChatService:
         content: str,
         sources: list | None,
         steps: list | None = None,
+        reasoning: str | None = None,
     ) -> None:
         if self.sessions:
             await self.sessions.save_message(
-                message_id, session_id, "assistant", content, sources, steps=steps
+                message_id, session_id, "assistant", content, sources,
+                steps=steps, reasoning=reasoning,
             )
 
     async def _history(self, session_id: str) -> list[dict]:

@@ -75,6 +75,7 @@ async def get_session(session_id: str, request: Request):
                     "content": m.content,
                     "sources": m.sources or [],
                     "steps": m.steps or [],
+                    "reasoning": m.reasoning,
                     "created_at": _dt(m.created_at),
                 }
                 for m in messages

@@ -56,6 +56,7 @@ export interface ChatMessage {
   content: string
   steps: StepEvent[]
   sources: SourceChunk[]
+  reasoning?: string
   clarify?: ClarifyPayload
   streaming?: boolean
   feedback?: 1 | -1 | 0
@@ -125,6 +126,7 @@ export interface AdminSessionDetail {
     content: string
     sources: SourceChunk[]
     steps: StepEvent[]
+    reasoning: string | null
     created_at: string | null
   }[]
 }

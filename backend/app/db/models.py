@@ -31,6 +31,7 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text)
     sources: Mapped[list | None] = mapped_column(JSON, nullable=True)
     steps: Mapped[list | None] = mapped_column(JSON, nullable=True)  # 思考过程步骤（StepEvent JSON 数组）
+    reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)  # LLM 推理思维链（reasoning_content）
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

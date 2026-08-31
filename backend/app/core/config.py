@@ -69,7 +69,9 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_model: str = "deepseek-chat"
     llm_temperature: float = 0.3
-    llm_max_tokens: int = 2048
+    # reasoning 模型（deepseek-v4-flash 等）思考过程计入 max_tokens，需留足预算给正式回答；
+    # 模型单次输出上限实测为 393216，取最大值彻底放开
+    llm_max_tokens: int = 393216
 
     # ---- 意图识别小模型（OpenAI 兼容，独立配置） ----
     intent_llm_api_key: str = ""

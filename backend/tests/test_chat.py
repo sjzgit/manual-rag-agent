@@ -43,8 +43,8 @@ def service():
     agent = MagicMock()
 
     async def fake_stream(system, messages):
-        yield "回答内容"
-        yield "来源：手册A > 模块 > 功能"
+        yield ("content", "回答内容")
+        yield ("content", "来源：手册A > 模块 > 功能")
 
     agent.stream_answer = fake_stream
     svc = ChatService(settings, retriever, recognizer, agent)
@@ -360,7 +360,7 @@ async def test_answer_flow_passes_history_to_llm(service):
 
     async def fake_stream(system, messages):
         captured_messages["messages"] = messages
-        yield "回答"
+        yield ("content", "回答")
 
     svc.agent.stream_answer = fake_stream
 

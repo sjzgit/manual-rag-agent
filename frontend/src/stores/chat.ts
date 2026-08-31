@@ -39,6 +39,7 @@ export const useChatStore = defineStore('chat', () => {
       content: r.content,
       steps: r.steps ?? [],
       sources: r.sources ?? [],
+      reasoning: r.reasoning ?? '',
       streaming: false,
       feedback: 0,
     }))
@@ -66,6 +67,7 @@ export const useChatStore = defineStore('chat', () => {
       content: '',
       steps: [],
       sources: [],
+      reasoning: '',
       streaming: true,
       feedback: 0,
     })
@@ -96,6 +98,9 @@ export const useChatStore = defineStore('chat', () => {
           },
           onToken: (t) => {
             aiMsg.content += t
+          },
+          onReasoning: (t) => {
+            aiMsg.reasoning = (aiMsg.reasoning ?? '') + t
           },
           onSources: (s) => {
             aiMsg.sources = s

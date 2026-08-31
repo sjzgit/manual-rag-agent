@@ -8,6 +8,7 @@ export interface StreamHandlers {
   onStep?: (step: ChatMessage['steps'][number]) => void
   onClarify?: (payload: NonNullable<ChatMessage['clarify']>) => void
   onToken?: (text: string) => void
+  onReasoning?: (text: string) => void
   onSources?: (sources: ChatMessage['sources']) => void
   onDone?: (messageId: string) => void
   onError?: (code: string, message: string) => void
@@ -61,6 +62,9 @@ export async function streamChat(
         break
       case 'token':
         handlers.onToken?.(data.text)
+        break
+      case 'reasoning':
+        handlers.onReasoning?.(data.text)
         break
       case 'sources':
         handlers.onSources?.(data.sources)

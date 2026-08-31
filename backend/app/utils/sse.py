@@ -23,6 +23,10 @@ def token(text: str) -> str:
     return sse_event("token", {"text": text})
 
 
+def reasoning(text: str) -> str:
+    return sse_event("reasoning", {"text": text})
+
+
 def sources(items: list[dict[str, Any]]) -> str:
     return sse_event("sources", {"sources": items})
 

@@ -3,8 +3,8 @@
   // Python 后端 (backend/)
   // ========================================
 
-  // Python 解释器路径
-  "python.defaultInterpreterPath": "E:\\miniconda3\\envs\\rag\\python.exe",
+  // Python 解释器路径（uv 管理的项目级 .venv）
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
 
   // Pylance 类型检查
   "python.analysis.typeCheckingMode": "basic",

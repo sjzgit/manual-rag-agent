@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content    TEXT        NOT NULL COMMENT '消息正文（assistant 消息为 Markdown，可含 /api/images/ 图片链接）',
     sources    JSON        NULL COMMENT 'AI回答的检索来源（SourceChunk JSON 数组：chunk_id/doc/path/score/content/images）',
     steps      JSON        NULL COMMENT '思考过程步骤（StepEvent JSON 数组：type/title/detail），历史会话回看时展示',
+    reasoning  TEXT        NULL COMMENT 'LLM 推理思维链（reasoning_content），历史会话回看时展示',
     created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间（历史消息按此正序）',
     INDEX idx_session (session_id) COMMENT '按会话查询消息的索引'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='消息表';

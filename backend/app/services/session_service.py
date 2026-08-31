@@ -131,6 +131,7 @@ class SessionService:
                     "content": r.content,
                     "sources": r.sources or [],
                     "steps": r.steps or [],
+                    "reasoning": r.reasoning,
                     "created_at": r.created_at.isoformat(),
                 }
                 for r in rows
@@ -144,6 +145,7 @@ class SessionService:
         content: str,
         sources: list | None = None,
         steps: list | None = None,
+        reasoning: str | None = None,
     ) -> None:
         if not self.db.available:
             return
@@ -157,6 +159,7 @@ class SessionService:
                         content=content,
                         sources=sources,
                         steps=steps,
+                        reasoning=reasoning,
                     )
                 )
                 # 刷新会话活跃时间（会话列表按最近活跃排序）

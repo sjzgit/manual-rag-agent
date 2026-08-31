@@ -182,7 +182,7 @@ function renderOutput(log: LlmCallLog) {
   <el-drawer
     v-model="modelValue"
     :title="detail?.session.title ?? '会话详情'"
-    size="60%"
+    size="100%"
     destroy-on-close
   >
     <el-tabs v-model="detailTab">
@@ -277,6 +277,15 @@ function renderOutput(log: LlmCallLog) {
                     </el-collapse-item>
                   </el-collapse>
                 </div>
+
+                <!-- 思考过程（LLM 推理思维链，默认收起） -->
+                <el-collapse v-if="assistant.reasoning" class="mb-2">
+                  <el-collapse-item title="思考过程（LLM 推理）">
+                    <div class="whitespace-pre-wrap rounded-lg bg-muted/70 px-2.5 py-2 text-[12px] leading-5 text-ink-sub">
+                      {{ assistant.reasoning }}
+                    </div>
+                  </el-collapse-item>
+                </el-collapse>
 
                 <!-- 助手回答 -->
                 <div class="rounded-lg bg-muted px-3 py-2.5">

@@ -2,7 +2,7 @@
 /** 消息气泡：用户右 / AI 左，Markdown 渲染 + 步骤面板 + 来源卡片 + 澄清卡片 + 反馈条 */
 import MarkdownIt from 'markdown-it'
 import { ElMessage } from 'element-plus'
-import { Check, Copy, ThumbsDown, ThumbsUp, Trash2, User } from 'lucide-vue-next'
+import { Brain, Check, ChevronDown, Copy, ThumbsDown, ThumbsUp, Trash2, User } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import type { ChatMessage } from '../types'
 import ClarifyCard from './ClarifyCard.vue'
@@ -25,6 +25,7 @@ const rendered = computed(() => md.render(props.message.content || ''))
 const showCommentFor = ref<-1 | 0>(0)
 const comment = ref('')
 const copied = ref(false)
+const showReasoning = ref(false)
 
 /** 复制文本到剪切板：Clipboard API 在非安全上下文（内网 HTTP IP）不可用，降级 execCommand。 */
 async function copyText(text: string): Promise<boolean> {
@@ -111,6 +112,28 @@ function submitDislike() {
     <div class="w-full max-w-[85%]">
       <div class="glass rounded-2xl rounded-tl-sm px-4 py-3.5">
         <StepPanel :steps="message.steps" :streaming="message.streaming" />
+
+        <div v-if="message.reasoning" class="mb-2 rounded-lg border border-muted/60 bg-muted/30">
+          <button
+            class="flex w-full items-center gap-1.5 px-3 py-2 text-[12px] font-medium text-ink-sub transition-colors hover:text-ink cursor-pointer"
+            @click="showReasoning = !showReasoning"
+          >
+            <Brain :size="13" class="text-primary/70" />
+            <span>思考过程</span>
+            <span v-if="message.streaming" class="text-[11px] text-ink-sub/50">生成中…</span>
+            <ChevronDown
+              :size="13"
+              class="ml-auto transition-transform duration-200"
+              :class="{ 'rotate-180': showReasoning }"
+            />
+          </button>
+          <div
+            v-if="showReasoning"
+            class="whitespace-pre-wrap border-t border-muted/60 px-3 py-2 text-[12px] leading-5 text-ink-sub/80"
+          >
+            {{ message.reasoning }}
+          </div>
+        </div>
 
         <div
           class="md-body"

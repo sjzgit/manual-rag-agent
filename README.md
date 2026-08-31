@@ -22,9 +22,7 @@
 # 后端（依赖在 pyproject.toml，无 requirements.txt）
 cd backend
 pip install -e ".[dev]"
-python -m app.main
-或
-uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload   # 本地开发端口 8001（vite 代理指向它）
+uv run python -m app.main
 
 # 前端
 cd frontend
@@ -141,7 +139,7 @@ code/
 ## 5. 关键契约（改动需评审）
 
 1. **SSE 事件协议**（[utils/sse.py](backend/app/utils/sse.py) ↔ 前端 `types.ts`/`stores/chat.ts`）：
-   事件类型 `meta / step / clarify / token / sources / done / error`，字段见 `sse.py`；新增事件类型须前后端同步并考虑历史会话回看兼容。
+   事件类型 `meta / step / clarify / token / reasoning / sources / done / error`，字段见 `sse.py`；新增事件类型须前后端同步并考虑历史会话回看兼容。
 2. **意图识别输出** `IntentResult`：`input / simple_input / module / role / description / intent_type(irrelevant|precise|vague) / missing_fields / clarify_question / intent_reason`。纯 Prompt 驱动（不依赖 meta_data.json，不做切片匹配，收录与否由向量检索决定）；LLM 输出 JSON 先代码校验修复、失败重试一次、仍失败判 vague 友好提示。
 3. **回答兜底话术**：检索不到必须回复"手册中未找到"；irrelevant 固定话术拒答——两者来自 `prompts/manual.py` 常量（经 `prompt_service.get` 读取，DB 可编辑），不硬编码在业务代码。
 4. **图片路由** `/api/images/{doc}/{filename}` 必须做路径穿越校验；markdown 中 `./media/x.png` 改写为该路由 URL（管理端上传的图片优先取 `uploads/{doc}/media/`、回退只读 `media_root`）。
