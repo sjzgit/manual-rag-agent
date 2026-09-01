@@ -89,6 +89,7 @@ async def lifespan(app: FastAPI):
         agentic,
         prompt_service,
         reranker,
+        knowledge,
     )
 
     logger.info(

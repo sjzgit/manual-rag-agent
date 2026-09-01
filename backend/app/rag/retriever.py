@@ -243,7 +243,22 @@ class ManualRetriever:
     ) -> list[SearchResult]:
         if self._model is None or self._collection is None:
             return []
+        try:
+            return self._hybrid_search(query, doc, top_k)
+        except Exception as e:
+            # Milvus 服务端重启/淘汰后 collection 可能被释放（code=101 collection
+            # not loaded），重新 load 后重试一次，避免把瞬时状态抛给对话流水线
+            if "collection not loaded" not in str(e):
+                raise
+            logger.warning("collection_not_loaded_reloading", error=str(e))
+            self._load_child_collection_sync()
+            if self._collection is None:
+                return []
+            return self._hybrid_search(query, doc, top_k)
 
+    def _hybrid_search(
+        self, query: str, doc: str | None, top_k: int | None
+    ) -> list[SearchResult]:
         k = top_k or self.settings.recall_top_k
         dense = self._dense_search(query, doc, k)
         sparse: list[SearchResult] = []

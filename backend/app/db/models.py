@@ -16,6 +16,7 @@ class Session(Base):
     title: Mapped[str] = mapped_column(String(256), default="新会话")
     doc_filter: Mapped[str | None] = mapped_column(String(256), nullable=True)
     clarify_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    memory_docs: Mapped[list | None] = mapped_column(JSON, nullable=True)  # 会话关联文档 id 列表（≤3）
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()

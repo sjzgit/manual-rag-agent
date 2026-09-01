@@ -177,6 +177,66 @@ async def test_search_and_rerank_unconfigured_reranker():
     assert outcome.mode == "dense" and len(outcome.final_hits) == 1
 
 
+# ---------- collection not loaded 自动重载重试 ----------
+
+def test_search_retries_after_collection_not_loaded():
+    """Milvus 服务端释放 collection（重启/淘汰）后检索报 collection not loaded：
+    应自动重新 load 并重试一次检索成功，而不是把异常抛给对话流水线。"""
+    r = make_retriever()
+    r._model = SimpleNamespace(
+        encode=lambda q, normalize_embeddings=True: [[0.1, 0.2, 0.3]]
+    )
+    calls = {"n": 0}
+
+    def flaky_search(**kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # 首次检索抛出与线上一致的 not loaded 错误（code=101）
+            raise RuntimeError(
+                "(code=101, message=failed to search: collection not loaded"
+                "[collection=468641932463151140])"
+            )
+        return [[]]  # 重试成功：单条空命中列表（results[0] 为空）
+
+    r._collection = SimpleNamespace(search=flaky_search)
+    r._load_child_collection_sync = lambda: None  # 模拟重新 load 成功（句柄仍可用）
+
+    hits = r._search_sync("问题", None, None)
+    assert hits == []
+    assert calls["n"] == 2  # 首次失败 + 重试成功，共两次检索
+
+
+def test_search_returns_empty_when_reload_fails():
+    """not loaded 后重新 load 仍失败（collection 句柄置空）：返回空命中优雅降级，不抛异常。"""
+    r = make_retriever()
+    r._model = SimpleNamespace(
+        encode=lambda q, normalize_embeddings=True: [[0.1, 0.2, 0.3]]
+    )
+
+    def not_loaded_search(**kw):
+        raise RuntimeError("(code=101, message=failed to search: collection not loaded)")
+
+    r._collection = SimpleNamespace(search=not_loaded_search)
+    # 模拟重载失败：_load_child_collection_sync 置空句柄（与真实失败路径一致）
+    r._load_child_collection_sync = lambda: setattr(r, "_collection", None)
+
+    assert r._search_sync("问题", None, None) == []
+
+
+def test_search_propagates_other_errors():
+    """非 collection not loaded 的异常（如网络/参数错误）照常抛出，避免吞掉真实故障。"""
+    r = make_retriever()
+    r._model = SimpleNamespace(
+        encode=lambda q, normalize_embeddings=True: [[0.1, 0.2, 0.3]]
+    )
+    r._collection = SimpleNamespace(
+        search=lambda **kw: (_ for _ in ()).throw(RuntimeError("connection refused"))
+    )
+
+    with pytest.raises(RuntimeError, match="connection refused"):
+        r._search_sync("问题", None, None)
+
+
 # ---------- build_context 相关度排序 ----------
 
 def test_build_context_sorts_by_final_score():

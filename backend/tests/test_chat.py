@@ -63,6 +63,15 @@ async def collect_events(gen) -> list[tuple[str, dict]]:
 
 @pytest.mark.asyncio
 async def test_precise_flow(service):
+    """【主流程-精确意图】用户提出精确问题时的完整 happy path。
+
+    场景：意图识别结果为 precise（精确意图）。
+    前置：mock 检索返回 1 条命中（含图片）、mock LLM 流式返回回答。
+    期望：
+      1. SSE 事件序列完整：step（步骤进度）→ token（流式回答）→ sources（引用来源）→ done（结束）；
+      2. 事件顺序正确：token 全部发完后才发 sources，最后 done；
+      3. sources 里透出命中的文档名与图片路径，供前端展示引用。
+    """
     svc, recognizer, _ = service
     from app.intent.models import IntentBatch
 
@@ -82,6 +91,14 @@ async def test_precise_flow(service):
 
 @pytest.mark.asyncio
 async def test_irrelevant_reject(service):
+    """【拒答-无关问题】与手册无关的提问应礼貌拒答，不走检索。
+
+    场景：意图识别结果为 irrelevant（与操作手册无关，如闲聊/天气）。
+    前置：mock 意图为 irrelevant，其余依赖同主流程。
+    期望：
+      1. 仍通过 token 事件流式输出含"无关"字样的拒答话术；
+      2. 不产生 sources 事件（没有检索就没有引用，防止编造来源）。
+    """
     svc, recognizer, _ = service
     from app.intent.models import IntentBatch
 
@@ -97,6 +114,12 @@ async def test_irrelevant_reject(service):
 
 @pytest.mark.asyncio
 async def test_not_found(service):
+    """【兜底-检索未命中】手册中查不到内容时应给出"未找到"提示而非报错。
+
+    场景：意图为精确提问，但混合检索最终结果为空（final_hits 无内容）。
+    前置：mock search_and_rerank 返回空的 HybridSearchOutcome。
+    期望：流式回答中包含"手册中未找到"类兜底话术，流程正常 done 不抛错。
+    """
     svc, recognizer, retriever = service
     from app.intent.models import IntentBatch
 
@@ -114,6 +137,16 @@ async def test_not_found(service):
 
 @pytest.mark.asyncio
 async def test_clarify_flow(service):
+    """【澄清-两轮完整流程】问题模糊时先反问，用户补充后合并回答。
+
+    场景：第一轮问题缺少 module（模块）字段被判为 vague（模糊）。
+    前置：第一轮 mock 意图 vague 且 module 为空；第二轮 mock 意图为精确。
+    期望：
+      第一轮——发出 clarify 事件（含 missing_fields=["module"] 指明缺什么），
+              不发 token（还没到回答阶段）；
+      第二轮——用户带 clarify_answer 补充"上体附中系统"后，
+              与原问题合并重新识别为精确意图，正常走完回答并给出 sources。
+    """
     svc, recognizer, _ = service
     from app.intent.models import IntentBatch
 
@@ -146,6 +179,13 @@ async def test_clarify_flow(service):
 
 @pytest.mark.asyncio
 async def test_clarify_max_rounds(service):
+    """【澄清-轮次上限】连续多轮仍模糊时不再无限反问，强制回答。
+
+    场景：同一 session 中用户反复补充信息但意图始终是 vague。
+    前置：mock 意图恒为 vague；先用 3 轮填满澄清轮次上限，再发起第 4 轮。
+    期望：达到上限后不再发 clarify 事件，直接走回答流程输出 token。
+    （防止死循环式追问，保证用户最终能得到答案。）
+    """
     svc, recognizer, _ = service
     from app.intent.models import IntentBatch
 
@@ -187,6 +227,7 @@ async def test_steps_persisted(service):
     sessions.get_clarify_state = AsyncMock(return_value=None)
     sessions.save_clarify_state = AsyncMock()
     sessions.get_messages = AsyncMock(return_value=[])
+    sessions.get_memory_docs = AsyncMock(return_value=[])
     svc.sessions = sessions
 
     recognizer.recognize = AsyncMock(
@@ -238,6 +279,7 @@ async def test_hybrid_step_detail_and_log_mode(service):
     sessions.get_clarify_state = AsyncMock(return_value=None)
     sessions.save_clarify_state = AsyncMock()
     sessions.get_messages = AsyncMock(return_value=[])
+    sessions.get_memory_docs = AsyncMock(return_value=[])
     svc.sessions = sessions
 
     recognizer.recognize = AsyncMock(
@@ -291,6 +333,7 @@ async def test_dense_mode_logs_only_final_stage(service):
     sessions.get_clarify_state = AsyncMock(return_value=None)
     sessions.save_clarify_state = AsyncMock()
     sessions.get_messages = AsyncMock(return_value=[])
+    sessions.get_memory_docs = AsyncMock(return_value=[])
     svc.sessions = sessions
 
     recognizer.recognize = AsyncMock(
@@ -346,6 +389,7 @@ async def test_answer_flow_passes_history_to_llm(service):
     sessions.log_llm_call = AsyncMock()
     sessions.get_clarify_state = AsyncMock(return_value=None)
     sessions.save_clarify_state = AsyncMock()
+    sessions.get_memory_docs = AsyncMock(return_value=[])
     # 历史含两条：一条历史 user + 一条历史 assistant（当前输入已在 handle_chat 内移除）
     sessions.get_messages = AsyncMock(
         return_value=[
@@ -374,3 +418,134 @@ async def test_answer_flow_passes_history_to_llm(service):
     assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
     assert msgs[0]["content"] == "实验会议室怎么预约？"
     assert msgs[-1]["content"] == "审批流程呢？"
+
+
+@pytest.mark.asyncio
+async def test_memory_direct_answer_skips_retrieval(service):
+    """会话记忆命中且意图输出 memory_answer_docs 时，应跳过检索、用记忆内容作答。"""
+    svc, recognizer, retriever = service
+    from app.intent.models import IntentBatch
+
+    sessions = MagicMock()
+    sessions.ensure_session = AsyncMock()
+    sessions.save_message = AsyncMock()
+    sessions.log_intents = AsyncMock()
+    sessions.log_retrievals = AsyncMock()
+    sessions.log_llm_call = AsyncMock()
+    sessions.get_clarify_state = AsyncMock(return_value=None)
+    sessions.save_clarify_state = AsyncMock()
+    sessions.get_messages = AsyncMock(return_value=[])
+    sessions.get_memory_docs = AsyncMock(return_value=["doc1"])
+    sessions.save_memory_docs = AsyncMock()
+    svc.sessions = sessions
+
+    redis = MagicMock()
+    redis.check_rate_limit = AsyncMock()
+    redis.get_doc_content = AsyncMock(
+        return_value={"doc_name": "手册A", "content": "这是手册A的完整内容"}
+    )
+    svc.redis = redis
+
+    recognizer.recognize = AsyncMock(
+        return_value=IntentBatch(
+            intents=[make_intent(memory_answer_docs=["手册A"])], used_llm=True
+        )
+    )
+    events = await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
+
+    retriever.search_and_rerank.assert_not_called()  # 跳过检索
+    assert not sessions.log_retrievals.await_args_list
+    assert any(e == "sources" for e, _ in events)
+    assert any(e == "done" for e, _ in events)
+    # 来源卡片应为文档级条目（chunk_id=doc_id）
+    src = next(d for e, d in events if e == "sources")["sources"][0]
+    assert src["doc"] == "手册A" and src["chunk_id"] == "doc1"
+
+
+@pytest.mark.asyncio
+async def test_memory_answer_marker_falls_back_to_retrieval(service):
+    """记忆直答时 LLM 判定依据不足（输出 NEED_RETRIEVAL 标记），应回退检索流程重新作答。"""
+    svc, recognizer, retriever = service
+    from app.intent.models import IntentBatch
+
+    sessions = MagicMock()
+    sessions.ensure_session = AsyncMock()
+    sessions.save_message = AsyncMock()
+    sessions.log_intents = AsyncMock()
+    sessions.log_retrievals = AsyncMock()
+    sessions.log_llm_call = AsyncMock()
+    sessions.get_clarify_state = AsyncMock(return_value=None)
+    sessions.save_clarify_state = AsyncMock()
+    sessions.get_messages = AsyncMock(return_value=[])
+    sessions.get_memory_docs = AsyncMock(return_value=["doc1"])
+    sessions.save_memory_docs = AsyncMock()
+    svc.sessions = sessions
+
+    redis = MagicMock()
+    redis.check_rate_limit = AsyncMock()
+    redis.get_doc_content = AsyncMock(
+        return_value={"doc_name": "手册A", "content": "这是手册A的完整内容"}
+    )
+    svc.redis = redis
+
+    recognizer.recognize = AsyncMock(
+        return_value=IntentBatch(
+            intents=[make_intent(memory_answer_docs=["手册A"])], used_llm=True
+        )
+    )
+
+    calls = {"n": 0}
+
+    async def fake_stream(system, messages):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # 第一次（记忆直答）：输出回退标记
+            yield ("content", "[[NEED_RETRIEVAL]]")
+        else:
+            # 第二次（检索后）：正常回答
+            yield ("content", "检索后的回答")
+
+    svc.agent.stream_answer = fake_stream
+
+    events = await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
+
+    # 应回退检索并重新生成
+    retriever.search_and_rerank.assert_called()
+    texts = "".join(d["text"] for e, d in events if e == "token")
+    assert "[[NEED_RETRIEVAL]]" not in texts  # 标记不透出给用户
+    assert "检索后的回答" in texts
+    assert any(e == "sources" for e, _ in events)
+
+
+@pytest.mark.asyncio
+async def test_memory_insufficient_falls_back_to_retrieval(service):
+    """有记忆文档但意图未输出 memory_answer_docs 时，应回退检索。"""
+    svc, recognizer, retriever = service
+    from app.intent.models import IntentBatch
+
+    sessions = MagicMock()
+    sessions.ensure_session = AsyncMock()
+    sessions.save_message = AsyncMock()
+    sessions.log_intents = AsyncMock()
+    sessions.log_retrievals = AsyncMock()
+    sessions.log_llm_call = AsyncMock()
+    sessions.get_clarify_state = AsyncMock(return_value=None)
+    sessions.save_clarify_state = AsyncMock()
+    sessions.get_messages = AsyncMock(return_value=[])
+    sessions.get_memory_docs = AsyncMock(return_value=["doc1"])
+    sessions.save_memory_docs = AsyncMock()
+    svc.sessions = sessions
+
+    redis = MagicMock()
+    redis.check_rate_limit = AsyncMock()
+    redis.get_doc_content = AsyncMock(
+        return_value={"doc_name": "手册A", "content": "内容"}
+    )
+    svc.redis = redis
+
+    recognizer.recognize = AsyncMock(
+        return_value=IntentBatch(intents=[make_intent()], used_llm=True)
+    )
+    await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
+
+    retriever.search_and_rerank.assert_called()  # 回退检索

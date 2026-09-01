@@ -210,6 +210,38 @@ class SessionService:
             logger.warning("get_clarify_failed", error=str(e))
         return None
 
+    # ---------- 会话记忆文档 ----------
+
+    async def get_memory_docs(self, session_id: str) -> list[str]:
+        if not self.db.available:
+            return []
+        try:
+            async with self.db.session() as s:
+                row = await s.get(Session, session_id)
+                if row and row.memory_docs:
+                    return list(row.memory_docs)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("get_memory_docs_failed", error=str(e))
+        return []
+
+    async def save_memory_docs(self, session_id: str, doc_ids: list[str]) -> None:
+        """合并写入会话关联文档 id：与已有值按序去重、上限 3 个（超过不再关联，不淘汰）。"""
+        if not self.db.available or not doc_ids:
+            return
+        try:
+            async with self.db.session() as s:
+                row = await s.get(Session, session_id)
+                if row is None:
+                    return
+                merged: list[str] = []
+                for did in list(row.memory_docs or []) + list(doc_ids):
+                    if did not in merged:
+                        merged.append(did)
+                row.memory_docs = merged[:3]
+                await s.commit()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("save_memory_docs_failed", error=str(e))
+
     # ---------- 日志 ----------
 
     async def log_intents(

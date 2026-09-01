@@ -186,6 +186,17 @@ class KnowledgeService:
             "chunk_count": doc.chunk_count,
         }
 
+    async def get_document_id_by_name(self, doc_name: str) -> str | None:
+        """按文档名查源文档 id（doc_name 唯一）。检索命中 hit.doc 为文档名，用于映射到 doc_id。"""
+        if not self.db.available:
+            return None
+        async with self.db.session() as s:
+            return (
+                await s.execute(
+                    select(SourceDocument.id).where(SourceDocument.doc_name == doc_name)
+                )
+            ).scalar_one_or_none()
+
     async def get_document_path(self, doc_id: str, kind: str) -> Path | None:
         """按 kind（md/preview/original）返回绝对文件路径。"""
         doc = await self._get_document(doc_id)

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title         VARCHAR(256) NOT NULL DEFAULT '新会话' COMMENT '会话标题（默认"新会话"，用户提问后自动取问题前50字）',
     doc_filter    VARCHAR(256) NULL COMMENT '文档过滤条件（限定检索的文档名，为空表示全部文档）',
     clarify_state JSON         NULL COMMENT '澄清追问状态（ClarifyState 的 JSON 序列化，包含已追问轮数与选项）',
+    memory_docs   JSON         NULL COMMENT '会话关联的操作手册文档id列表（上限3个，仅存id不存内容）',
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间（会话列表按此倒序）'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='会话表';

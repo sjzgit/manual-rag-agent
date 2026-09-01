@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     cache_ttl_seconds: int = 3600
     rate_limit_per_minute: int = 30
 
+    # ---- 会话记忆 ----
+    memory_direct_answer: bool = True  # 会话记忆直接作答开关（关：意图识别不注入记忆，后续自然不直答）
+    doc_md_cache_ttl_seconds: int = 300  # 关联文档 md 内容 Redis 短期缓存
+
     # ---- 管理端 ----
     admin_token: str = ""
 
