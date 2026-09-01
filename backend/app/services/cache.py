@@ -99,34 +99,3 @@ class RedisService:
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("cache_set_error", error=str(e))
-
-    # ---------- 会话记忆文档内容缓存 ----------
-
-    async def get_doc_content(self, doc_id: str) -> dict | None:
-        """读取文档 md 内容缓存，返回 {"doc_name":..., "content":...} 或 None。"""
-        if self._redis is None:
-            return None
-        try:
-            import json
-
-            data = await self._redis.get(f"docmd:{doc_id}")
-            return json.loads(data) if data else None
-        except Exception:  # noqa: BLE001
-            return None
-
-    async def set_doc_content(
-        self, doc_id: str, doc_name: str, content: str, ttl: int | None = None
-    ) -> None:
-        """缓存文档 md 内容（短期 TTL，文档被重传/删除后自然失效）。"""
-        if self._redis is None:
-            return
-        try:
-            import json
-
-            await self._redis.setex(
-                f"docmd:{doc_id}",
-                ttl or self.settings.doc_md_cache_ttl_seconds,
-                json.dumps({"doc_name": doc_name, "content": content}, ensure_ascii=False),
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("doc_cache_set_error", error=str(e))

@@ -41,25 +41,12 @@ class IntentRecognizer:
         """意图识别提示词：优先提示词服务，未注入时回退代码常量。"""
         return self.prompt_service.get("intent_system") if self.prompt_service else INTENT_SYSTEM_PROMPT
 
-    def _memory_context_prompt(self, memory_docs: list[dict] | None) -> str:
-        """把会话记忆文档完整内容追加进意图识别 system 提示词，供判断能否凭关联文档直接作答。"""
-        base = self._intent_prompt()
-        if not memory_docs:
-            return base
-        blocks = [f"### {d['doc_name']}\n\n{d['content']}" for d in memory_docs]
-        return (
-            base
-            + "\n\n## 会话记忆文档内容（本会话已关联的操作手册完整内容，仅供判断能否直接作答）\n\n"
-            + "\n\n---\n\n".join(blocks)
-        )
-
     # ---------- 主入口 ----------
 
     async def recognize(
         self,
         question: str,
         history: list[dict] | None = None,
-        memory_docs: list[dict] | None = None,
     ) -> IntentBatch:
         """识别用户输入，返回逐子问题的意图结果。
 
@@ -68,13 +55,9 @@ class IntentRecognizer:
             history: 会话历史消息（[{role, content}, ...]，不含当前输入），
                 用于结合上下文识别：当前输入为指代/承接/省略模块时，
                 依据历史最近确定的模块补全，避免误判为无关或模糊。
-            memory_docs: 会话记忆关联文档内容（[{doc_id, doc_name, content}, ...]），
-                注入 system 提示词供小模型判断能否凭关联文档直接作答（memory_answer_docs）。
         """
         if self.settings.intent_llm_configured:
-            return await self._recognize_by_llm(
-                question, history=history, memory_docs=memory_docs
-            )
+            return await self._recognize_by_llm(question, history=history)
         return self._recognize_by_rules(question, history=history)
 
     async def generate_clarify_question(self, intents: list[IntentResult]) -> str:
@@ -94,18 +77,16 @@ class IntentRecognizer:
         self,
         question: str,
         history: list[dict] | None = None,
-        memory_docs: list[dict] | None = None,
     ) -> IntentBatch:
         """LLM 识别意图。history 作为多轮消息注入，让模型结合上下文
         补全指代（如"那审批流程呢"）与省略的模块要素。
 
-        memory_docs 注入后，模型额外判断 precise 意图能否凭关联文档直接作答
-        （输出 memory_answer_docs 文档名称列表）。输出校验：解析失败 → 重试一次 → 仍失败判 vague。
+        输出校验：解析失败 → 重试一次 → 仍失败判 vague。
         """
         llm_calls: list[dict] = []
         last_error = ""
         for attempt in (1, 2):
-            system = self._memory_context_prompt(memory_docs)
+            system = self._intent_prompt()
             raw, messages = await self._chat(
                 system, question, json_mode=True, history=history
             )
@@ -199,7 +180,6 @@ class IntentRecognizer:
                     missing_fields=missing,
                     clarify_question=(item.get("clarify_question") or "").strip(),
                     intent_reason=item.get("intent_reason") or "",
-                    memory_answer_docs=[str(n) for n in item.get("memory_answer_docs") or []],
                 )
             )
         return results

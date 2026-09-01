@@ -18,7 +18,6 @@ class IntentResult(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)  # vague 时缺失的要素(module/role/description)
     clarify_question: str = ""  # vague 时 LLM 生成的澄清问题
     intent_reason: str = ""
-    memory_answer_docs: list[str] = Field(default_factory=list)  # 无需检索、可直接凭关联文档作答时，列出覆盖该子问题的文档名称；空=需检索
 
 
 class IntentBatch(BaseModel):
@@ -45,21 +44,6 @@ class IntentBatch(BaseModel):
         return bool(self.intents) and all(
             i.intent_type == "precise" for i in self.intents
         )
-
-    @property
-    def all_memory_sufficient(self) -> bool:
-        """全部子问题都能凭关联文档直接作答（每个都有覆盖文档）时为 True，可整体跳过检索。"""
-        return bool(self.intents) and all(i.memory_answer_docs for i in self.intents)
-
-    @property
-    def memory_answer_docs(self) -> list[str]:
-        """全部子问题的可直接作答文档名称并集（去重保序），供直答环节取文档内容。"""
-        merged: list[str] = []
-        for i in self.intents:
-            for name in i.memory_answer_docs:
-                if name not in merged:
-                    merged.append(name)
-        return merged
 
 
 class ClarifyState(BaseModel):

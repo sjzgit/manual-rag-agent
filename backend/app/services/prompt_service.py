@@ -12,7 +12,6 @@ from app.prompts.manual import (
     ANSWER_SYSTEM_PROMPT,
     CLARIFY_EXHAUSTED_PREFIX,
     IRRELEVANT_REPLY,
-    MEMORY_ANSWER_SYSTEM_PROMPT,
     NOT_FOUND_REPLY,
 )
 
@@ -22,7 +21,6 @@ logger = get_logger(name=__name__)
 _DEFAULTS: dict[str, tuple[str, str]] = {
     "intent_system": ("意图识别提示词", INTENT_SYSTEM_PROMPT),
     "answer_system": ("回答生成提示词", ANSWER_SYSTEM_PROMPT),
-    "memory_answer_system": ("会话记忆直答提示词", MEMORY_ANSWER_SYSTEM_PROMPT),
     "agentic_system": ("Agentic 模式提示词", AGENTIC_SYSTEM_PROMPT),
     "not_found_reply": ("未找到兜底话术", NOT_FOUND_REPLY),
     "irrelevant_reply": ("无关问题拒答话术", IRRELEVANT_REPLY),

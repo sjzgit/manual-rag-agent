@@ -1,5 +1,4 @@
 """对话流水线状态机：意图识别 → 澄清循环 → 逐子问题检索 → LLM 流式生成。"""
-import asyncio
 import uuid
 from collections.abc import AsyncGenerator
 
@@ -13,11 +12,9 @@ from ..prompts.manual import (
     ANSWER_SYSTEM_PROMPT,
     CLARIFY_EXHAUSTED_PREFIX,
     IRRELEVANT_REPLY,
-    MEMORY_ANSWER_SYSTEM_PROMPT,
-    NEED_RETRIEVAL_MARKER,
     NOT_FOUND_REPLY,
 )
-from ..rag.models import ChatRequest, SearchResult, SourceChunk
+from ..rag.models import ChatRequest, HybridSearchOutcome, SearchResult, SourceChunk
 from ..rag.retriever import ManualRetriever
 from ..utils import sse
 from .session_service import SessionService
@@ -104,14 +101,10 @@ class ChatService:
                     f"{message_id}_u", session_id, "user", req.clarify_answer or req.question
                 )
 
-            # 会话记忆直接作答：读取关联文档完整内容（doc_id → md，Redis 短期缓存），
-            # 注入意图识别供其判断能否凭关联文档直接作答（memory_answer_docs）。
-            # 开关关闭时不读取不注入，意图识别输出 memory_answer_docs 恒为空，后续自然走检索。
-            memory_docs: list[dict] = []
-            if self.sessions and self.settings.memory_direct_answer:
-                memory_doc_ids = await self.sessions.get_memory_docs(session_id)
-                if memory_doc_ids:
-                    memory_docs = await self._load_memory_doc_contents(memory_doc_ids)
+            # 会话记忆（关联手册优先检索）：读关联文档 id → 手册名，检索阶段先在
+            # 关联手册范围内混合检索、分数达标直接采用，不足再全库检索。
+            # 开关关闭时不读取，等同纯全库检索；记忆仍会在检索作答后持续累积。
+            memory_doc_names = await self._memory_doc_names(session_id)
 
             # 1) 意图识别（结合会话上下文：指代/承接性提问根据历史补全模块）
             yield _step_payload(steps, "intent", "意图识别中…")
@@ -119,9 +112,7 @@ class ChatService:
             # 刚保存的当前输入不视为"历史"，移除避免自我参照
             if history and history[-1]["role"] == "user":
                 history = history[:-1]
-            batch = await self.recognizer.recognize(
-                question, history=history, memory_docs=memory_docs
-            )
+            batch = await self.recognizer.recognize(question, history=history)
             yield _step_payload(
                 steps,
                 "intent",
@@ -166,7 +157,7 @@ class ChatService:
                     async for chunk in self._answer_flow(
                         session_id, question, vague, req.doc, message_id, steps=steps,
                         prefix=self._prompt("clarify_exhausted_prefix", CLARIFY_EXHAUSTED_PREFIX),
-                        history=history,
+                        history=history, memory_doc_names=memory_doc_names,
                     ):
                         yield chunk
                     return
@@ -183,26 +174,13 @@ class ChatService:
                 yield sse.done(message_id)
                 return
 
-            # 4) 全部精确 → 记忆直答（跳过检索，依据不足自动回退）或 检索 + 回答
+            # 4) 全部精确 → 检索（关联手册优先，分数不足自动全库）+ 回答
             await self._set_clarify_state(session_id, None)
-            # 按意图识别指出的可直答文档名，从已加载的关联文档中取对应内容作答
-            answer_docs = (
-                [d for d in memory_docs if d["doc_name"] in batch.memory_answer_docs]
-                if memory_docs and batch.all_memory_sufficient
-                else []
-            )
-            if answer_docs:
-                async for chunk in self._answer_from_memory(
-                    session_id, question, answer_docs, batch.precise_intents, req.doc,
-                    message_id, steps, history=history,
-                ):
-                    yield chunk
-            else:
-                async for chunk in self._answer_flow(
-                    session_id, question, batch.precise_intents, req.doc, message_id, steps=steps,
-                    history=history,
-                ):
-                    yield chunk
+            async for chunk in self._answer_flow(
+                session_id, question, batch.precise_intents, req.doc, message_id, steps=steps,
+                history=history, memory_doc_names=memory_doc_names,
+            ):
+                yield chunk
 
         except Exception as e:
             logger.error("chat_pipeline_error", error=str(e), session_id=session_id)
@@ -220,20 +198,37 @@ class ChatService:
         steps: list[dict],
         prefix: str = "",
         history: list[dict] | None = None,
+        memory_doc_names: list[str] | None = None,
     ) -> AsyncGenerator[str]:
-        # 逐子问题混合检索 + 重排
+        # 逐子问题混合检索 + 重排（会话记忆：先在关联手册范围内检索，分数不足自动全库）
         yield _step_payload(steps, "retrieve", "混合检索中…")
         all_hits: list[SearchResult] = []
         seen: set[str] = set()
         for intent in intents:
             q = intent.simple_input or intent.input
-            outcome = await self.retriever.search_and_rerank(
-                q, doc=doc_filter, reranker=self.reranker
-            )
+            # 会话记忆：先在关联手册范围内检索，分数达标直接采用，不足转全库
+            outcome = None
+            if memory_doc_names:
+                outcome = await self.retriever.search_and_rerank(
+                    q, doc=doc_filter, reranker=self.reranker,
+                    docs=memory_doc_names, scope="memory",
+                )
+                if not self._memory_reliable(outcome):
+                    yield _step_payload(
+                        steps, "retrieve", "关联手册命中不足，转全库检索",
+                        {"sub_question": q, "scope": "global", "docs": memory_doc_names},
+                    )
+                    outcome = None
+            if outcome is None:
+                outcome = await self.retriever.search_and_rerank(
+                    q, doc=doc_filter, reranker=self.reranker
+                )
             hits, mode = outcome.final_hits, outcome.mode
             title = "混合检索+重排" if mode == "hybrid-rerank" else (
                 "混合检索" if mode == "hybrid" else "向量检索"
             )
+            if outcome.scope == "memory":
+                title += "（会话关联手册内）"
             yield _step_payload(
                 steps,
                 "retrieve",
@@ -241,6 +236,7 @@ class ChatService:
                 {
                     "sub_question": q,
                     "mode": mode,
+                    "scope": outcome.scope,
                     "hits": [self._hit_summary(h) for h in hits],
                 },
             )
@@ -408,97 +404,18 @@ class ChatService:
         yield sse.sources(source_dicts)
         yield sse.done(message_id)
 
-    async def _answer_from_memory(
-        self,
-        session_id: str,
-        question: str,
-        memory_docs: list[dict],
-        intents,
-        doc_filter: str | None,
-        message_id: str,
-        steps: list[dict],
-        history: list[dict] | None = None,
-    ) -> AsyncGenerator[str]:
-        """会话记忆直答：跳过检索，用已关联文档完整内容作答。
+    def _memory_reliable(self, outcome: HybridSearchOutcome) -> bool:
+        """关联手册范围内的检索结果是否可靠（可跳过全库检索）。
 
-        生成时若 LLM 判定依据不足（输出 NEED_RETRIEVAL 标记），回退检索流程重新作答。
-        标记检测用首段缓冲：内容仍是标记前缀时暂不下发，一旦发散立即放行恢复流式输出，
-        保证正常直答的首 token 延迟只有标记长度的量级。
+        final_hits 非空且至少一条 score 达到 memory_direct_score_threshold。
+        score 语义：rerank 后即 rerank_score（0~1）；未配置 rerank 时为
+        COSINE/融合分（量纲不同，但方向保守：分数不足只会多走一次全库检索，
+        不会误放行弱命中）。
         """
-        yield _step_payload(
-            steps,
-            "retrieve",
-            "命中会话记忆，跳过检索",
-            {"memory_docs": [d["doc_name"] for d in memory_docs]},
+        return any(
+            h.score >= self.settings.memory_direct_score_threshold
+            for h in outcome.final_hits
         )
-        context = self._build_memory_context(memory_docs)
-        system = self._prompt("memory_answer_system", MEMORY_ANSWER_SYSTEM_PROMPT).format(
-            context=context
-        )
-        messages = [*(history or []), {"role": "user", "content": question}]
-        yield _step_payload(steps, "thinking", "生成回答中…")
-
-        full_text = ""
-        reasoning_text = ""
-        pending = ""  # 标记检测缓冲
-        marker_possible = True
-        need_retrieval = False
-        stream = self.agent.stream_answer(system, messages)
-        try:
-            async for kind, text in stream:
-                if kind == "reasoning":
-                    reasoning_text += text
-                    yield sse.reasoning(text)
-                    continue
-                if marker_possible:
-                    probe = (pending + text).lstrip()
-                    if probe.startswith(NEED_RETRIEVAL_MARKER):
-                        need_retrieval = True
-                        break  # 依据不足 → 中止直答，转检索
-                    if NEED_RETRIEVAL_MARKER.startswith(probe):
-                        pending += text
-                        continue
-                    # 与标记发散：放行缓冲内容，恢复流式输出
-                    marker_possible = False
-                    if pending.strip():
-                        full_text += pending
-                        yield sse.token(pending)
-                        pending = ""
-                full_text += text
-                yield sse.token(text)
-        finally:
-            # 中途 break 也要关闭底层流（httpx 连接及时归还）
-            await stream.aclose()
-
-        if need_retrieval:
-            yield _step_payload(steps, "retrieve", "记忆内容不足以回答，转检索流程")
-            async for chunk in self._answer_flow(
-                session_id, question, intents, doc_filter, message_id, steps=steps,
-                history=history,
-            ):
-                yield chunk
-            return
-
-        # 流结束时缓冲恰为完整标记（未触发 break 的场景）→ 同样回退
-        if pending.lstrip() == NEED_RETRIEVAL_MARKER:
-            yield _step_payload(steps, "retrieve", "记忆内容不足以回答，转检索流程")
-            async for chunk in self._answer_flow(
-                session_id, question, intents, doc_filter, message_id, steps=steps,
-                history=history,
-            ):
-                yield chunk
-            return
-
-        full_text += pending
-        if pending.strip():
-            yield sse.token(pending)
-
-        async for event in self._finalize_answer(
-            session_id, message_id, full_text, self._memory_source_chunks(memory_docs), steps,
-            reasoning_text=reasoning_text, system=system, messages=messages,
-            context_len=len(context),
-        ):
-            yield event
 
     # ---------- 辅助 ----------
 
@@ -561,30 +478,23 @@ class ChatService:
 
     # ---------- 会话记忆 ----------
 
-    async def _load_memory_doc_contents(self, memory_doc_ids: list[str]) -> list[dict]:
-        """按 doc_id 取 md 内容（Redis 短期缓存优先，未命中读文件并回写）。
-        文档已失效（被删）则跳过，避免把陈旧内容注入上下文。"""
-        docs: list[dict] = []
-        for doc_id in memory_doc_ids:
-            entry = None
-            if self.redis:
-                entry = await self.redis.get_doc_content(doc_id)
-            if entry is None and self.knowledge_service:
-                doc = await self.knowledge_service.get_document(doc_id)
-                if doc:
-                    md_path = await self.knowledge_service.get_document_path(doc_id, "md")
-                    if md_path and md_path.exists():
-                        content = await asyncio.to_thread(
-                            md_path.read_text, encoding="utf-8"
-                        )
-                        entry = {"doc_name": doc["doc_name"], "content": content}
-                        if self.redis:
-                            await self.redis.set_doc_content(
-                                doc_id, entry["doc_name"], content
-                            )
-            if entry:
-                docs.append({"doc_id": doc_id, **entry})
-        return docs
+    async def _memory_doc_names(self, session_id: str) -> list[str]:
+        """读会话关联文档 id 并映射为手册名（检索范围用）。
+
+        开关关闭时不读取（等同纯全库）；文档已删的 id 跳过；
+        无会话服务/无关联时返回 []。名称映射每轮直查（≤3 行主键查询），不做缓存。
+        """
+        if not self.sessions or not self.settings.memory_direct_answer:
+            return []
+        doc_ids = await self.sessions.get_memory_docs(session_id)
+        if not doc_ids or not self.knowledge_service:
+            return []
+        names: list[str] = []
+        for doc_id in doc_ids:
+            doc = await self.knowledge_service.get_document(doc_id)
+            if doc and doc["doc_name"] not in names:
+                names.append(doc["doc_name"])
+        return names
 
     async def _remember_docs(
         self, session_id: str, all_hits: list[SearchResult]
@@ -599,25 +509,6 @@ class ChatService:
                 doc_ids.append(doc_id)
         if doc_ids:
             await self.sessions.save_memory_docs(session_id, doc_ids)
-
-    @staticmethod
-    def _build_memory_context(memory_docs: list[dict]) -> str:
-        parts = [f"## 文档：{d['doc_name']}\n\n{d['content']}" for d in memory_docs]
-        return "\n\n".join(parts)
-
-    @staticmethod
-    def _memory_source_chunks(memory_docs: list[dict]) -> list[SourceChunk]:
-        return [
-            SourceChunk(
-                chunk_id=d["doc_id"],
-                doc=d["doc_name"],
-                path=d["doc_name"],
-                score=1.0,
-                content="",
-                images=[],
-            )
-            for d in memory_docs
-        ]
 
     @staticmethod
     def _missing_fields(vague_intents) -> list[str]:

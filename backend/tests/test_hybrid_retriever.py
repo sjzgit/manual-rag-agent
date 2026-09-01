@@ -201,7 +201,7 @@ def test_search_retries_after_collection_not_loaded():
     r._collection = SimpleNamespace(search=flaky_search)
     r._load_child_collection_sync = lambda: None  # 模拟重新 load 成功（句柄仍可用）
 
-    hits = r._search_sync("问题", None, None)
+    hits = r._search_sync("问题", None, None, None)
     assert hits == []
     assert calls["n"] == 2  # 首次失败 + 重试成功，共两次检索
 
@@ -220,7 +220,7 @@ def test_search_returns_empty_when_reload_fails():
     # 模拟重载失败：_load_child_collection_sync 置空句柄（与真实失败路径一致）
     r._load_child_collection_sync = lambda: setattr(r, "_collection", None)
 
-    assert r._search_sync("问题", None, None) == []
+    assert r._search_sync("问题", None, None, None) == []
 
 
 def test_search_propagates_other_errors():
@@ -234,7 +234,7 @@ def test_search_propagates_other_errors():
     )
 
     with pytest.raises(RuntimeError, match="connection refused"):
-        r._search_sync("问题", None, None)
+        r._search_sync("问题", None, None, None)
 
 
 # ---------- build_context 相关度排序 ----------

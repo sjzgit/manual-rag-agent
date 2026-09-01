@@ -229,22 +229,31 @@ class ManualRetriever:
     # ---------- 检索 ----------
 
     async def search(
-        self, query: str, doc: str | None = None, top_k: int | None = None
+        self,
+        query: str,
+        doc: str | None = None,
+        top_k: int | None = None,
+        docs: list[str] | None = None,
     ) -> list[SearchResult]:
         """混合检索：稠密 + 稀疏（可用时）两路召回 + 加权 RRF 融合。
 
         top_k 显式传入时作为每路召回数（如 agentic 工具 top_k=2），
         否则用 settings.recall_top_k（融合候选池）。
+        doc/docs 为检索范围：docs（精确手册名列表，如会话记忆优先检索）优先于单 doc。
         """
-        return await asyncio.to_thread(self._search_sync, query, doc, top_k)
+        return await asyncio.to_thread(self._search_sync, query, doc, top_k, docs)
 
     def _search_sync(
-        self, query: str, doc: str | None, top_k: int | None
+        self,
+        query: str,
+        doc: str | None,
+        top_k: int | None,
+        docs: list[str] | None,
     ) -> list[SearchResult]:
         if self._model is None or self._collection is None:
             return []
         try:
-            return self._hybrid_search(query, doc, top_k)
+            return self._hybrid_search(query, doc, top_k, docs)
         except Exception as e:
             # Milvus 服务端重启/淘汰后 collection 可能被释放（code=101 collection
             # not loaded），重新 load 后重试一次，避免把瞬时状态抛给对话流水线
@@ -254,16 +263,20 @@ class ManualRetriever:
             self._load_child_collection_sync()
             if self._collection is None:
                 return []
-            return self._hybrid_search(query, doc, top_k)
+            return self._hybrid_search(query, doc, top_k, docs)
 
     def _hybrid_search(
-        self, query: str, doc: str | None, top_k: int | None
+        self,
+        query: str,
+        doc: str | None,
+        top_k: int | None,
+        docs: list[str] | None,
     ) -> list[SearchResult]:
         k = top_k or self.settings.recall_top_k
-        dense = self._dense_search(query, doc, k)
+        dense = self._dense_search(query, doc, k, docs)
         sparse: list[SearchResult] = []
         if self.sparse_ready:
-            sparse = self._sparse_search(query, doc, k)
+            sparse = self._sparse_search(query, doc, k, docs)
         if not sparse:
             # 纯稠密链路（含稀疏路降级）：直接返回，分数语义与旧版一致
             return dense
@@ -275,8 +288,18 @@ class ManualRetriever:
             self.settings.rrf_k,
         )
 
+    @staticmethod
+    def _doc_expr(doc: str | None, docs: list[str] | None) -> str | None:
+        """构造 Milvus 手册范围过滤表达式：docs 列表优先，其次单 doc，均空返回 None。"""
+        if docs:
+            escaped = ", ".join(f'"{d.replace(chr(92), chr(92) * 2).replace(chr(34), chr(34) * 2)}"' for d in docs)
+            return f"doc in [{escaped}]"
+        if doc:
+            return f'doc == "{doc}"'
+        return None
+
     def _dense_search(
-        self, query: str, doc: str | None, k: int
+        self, query: str, doc: str | None, k: int, docs: list[str] | None = None
     ) -> list[SearchResult]:
         """稠密路：BGE 编码 + Milvus COSINE 检索（原链路）。"""
         if self._model is None or self._collection is None:
@@ -289,8 +312,9 @@ class ManualRetriever:
             "limit": k,
             "output_fields": ["doc", "path", "content"],
         }
-        if doc:
-            search_params["expr"] = f'doc == "{doc}"'
+        expr = self._doc_expr(doc, docs)
+        if expr:
+            search_params["expr"] = expr
         results = cast(Any, self._collection.search(**search_params))
         return [
             SearchResult(
@@ -305,7 +329,7 @@ class ManualRetriever:
         ]
 
     def _sparse_search(
-        self, query: str, doc: str | None, k: int
+        self, query: str, doc: str | None, k: int, docs: list[str] | None = None
     ) -> list[SearchResult]:
         """稀疏路：BM25 query 编码 + Milvus SPARSE/IP 检索；异常降级为空（不传播）。"""
         if self._collection is None:
@@ -322,8 +346,9 @@ class ManualRetriever:
                 "limit": k,
                 "output_fields": ["doc", "path", "content"],
             }
-            if doc:
-                search_params["expr"] = f'doc == "{doc}"'
+            expr = self._doc_expr(doc, docs)
+            if expr:
+                search_params["expr"] = expr
             results = cast(Any, self._collection.search(**search_params))
             return [
                 SearchResult(
@@ -373,14 +398,17 @@ class ManualRetriever:
         doc: str | None = None,
         reranker=None,
         top_n: int | None = None,
+        docs: list[str] | None = None,
+        scope: str = "global",
     ) -> HybridSearchOutcome:
         """混合检索 + 重排编排：检索 → 融合 → 阈值过滤 → 按父去重 → rerank → 前 N。
 
-        返回 HybridSearchOutcome（dense/sparse/fused/final 四阶段列表 + mode），
-        mode ∈ "hybrid-rerank" | "hybrid" | "dense"（供 step 事件展示与日志落库）。
+        返回 HybridSearchOutcome（dense/sparse/fused/final 四阶段列表 + mode + scope），
+        mode ∈ "hybrid-rerank" | "hybrid" | "dense"（供 step 事件展示与日志落库）；
+        docs 为手册名范围列表（会话记忆优先检索），scope（global|memory）标记本次检索范围。
         rerank 失败降级融合序，绝不抛出。
         """
-        fused = await self.search(query, doc=doc)
+        fused = await self.search(query, doc=doc, docs=docs)
         mode = "hybrid" if self.sparse_ready else "dense"
         # 阶段快照：融合结果本身（含两路分数/排名），供日志分阶段展示
         fused_snapshot = [h.model_copy() for h in fused]
@@ -395,6 +423,7 @@ class ManualRetriever:
             final = reps[:n]
             return HybridSearchOutcome(
                 mode=mode,
+                scope=scope,
                 dense_hits=dense_hits,
                 sparse_hits=sparse_hits,
                 fused_hits=[h.model_copy() for h in reps],
@@ -409,6 +438,7 @@ class ManualRetriever:
             logger.warning("rerank_failed_fallback_fused", error=str(e))
             return HybridSearchOutcome(
                 mode=mode,
+                scope=scope,
                 dense_hits=dense_hits,
                 sparse_hits=sparse_hits,
                 fused_hits=[h.model_copy() for h in reps],
@@ -426,6 +456,7 @@ class ManualRetriever:
             logger.warning("rerank_empty_fallback_fused")
             return HybridSearchOutcome(
                 mode=mode,
+                scope=scope,
                 dense_hits=dense_hits,
                 sparse_hits=sparse_hits,
                 fused_hits=[h.model_copy() for h in reps],
@@ -433,6 +464,7 @@ class ManualRetriever:
             )
         return HybridSearchOutcome(
             mode="hybrid-rerank",
+            scope=scope,
             dense_hits=dense_hits,
             sparse_hits=sparse_hits,
             fused_hits=fused_snapshot if reps else [],

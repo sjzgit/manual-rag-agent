@@ -30,10 +30,12 @@ class HybridSearchOutcome(BaseModel):
     - sparse_hits：稀疏路（关键词检索）原始召回，按 BM25 内积降序；
     - fused_hits：RRF 融合 + 阈值过滤 + 按父去重后的代表列表（rerank 输入）；
     - final_hits：最终返回列表（rerank 后前 N；未重排时即融合序前 N）；
-    - mode：dense | hybrid | hybrid-rerank（稀疏路未生效时无 sparse/fused 两阶段）。
+    - mode：dense | hybrid | hybrid-rerank（稀疏路未生效时无 sparse/fused 两阶段）；
+    - scope：global | memory（本次检索范围：全库 / 会话关联手册优先段）。
     """
 
     mode: str
+    scope: str = "global"
     dense_hits: list[SearchResult] = Field(default_factory=list)
     sparse_hits: list[SearchResult] = Field(default_factory=list)
     fused_hits: list[SearchResult] = Field(default_factory=list)

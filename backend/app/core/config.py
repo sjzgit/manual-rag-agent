@@ -96,8 +96,8 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 30
 
     # ---- 会话记忆 ----
-    memory_direct_answer: bool = True  # 会话记忆直接作答开关（关：意图识别不注入记忆，后续自然不直答）
-    doc_md_cache_ttl_seconds: int = 300  # 关联文档 md 内容 Redis 短期缓存
+    memory_direct_answer: bool = True  # 关联手册优先检索开关（开：先在会话关联手册内检索再全库；关：总是全库，记忆仍持续累积）
+    memory_direct_score_threshold: float = 0.6  # 关联手册内检索结果的采用阈值（rerank 分量纲；未重排时为相似度分，方向保守）
 
     # ---- 管理端 ----
     admin_token: str = ""
