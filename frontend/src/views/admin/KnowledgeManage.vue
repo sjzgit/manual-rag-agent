@@ -24,7 +24,9 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(10)
 const loading = ref(false)
-const uploading = ref(false)
+// 多文件并发上传时的在途计数（>0 即显示 loading，全部完成后复位）
+const uploadingCount = ref(0)
+const uploading = computed(() => uploadingCount.value > 0)
 let pollTimer: number | null = null
 
 const hasActive = computed(() =>
@@ -65,17 +67,18 @@ function schedulePoll() {
   }, 3000)
 }
 
-async function handleUpload(options: UploadRequestOptions) {
+async function handleUpload(options: UploadRequestOptions): Promise<void> {
+  // el-upload multiple 模式下每个文件各触发一次 http-request，逐个上传即可
   const file = options.file
-  uploading.value = true
+  uploadingCount.value++
   try {
     await uploadDocument(file)
     ElMessage.success(`「${file.name}」已提交处理`)
     await refresh()
   } catch (e) {
-    ElMessage.error((e as Error).message)
+    ElMessage.error(`「${file.name}」上传失败：${(e as Error).message}`)
   } finally {
-    uploading.value = false
+    uploadingCount.value--
   }
 }
 
@@ -182,6 +185,7 @@ onUnmounted(() => {
       </div>
       <el-upload
         accept=".docx,.doc"
+        multiple
         :show-file-list="false"
         :http-request="handleUpload"
       >
