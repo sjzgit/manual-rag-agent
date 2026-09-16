@@ -27,6 +27,11 @@ def reasoning(text: str) -> str:
     return sse_event("reasoning", {"text": text})
 
 
+def intent_reasoning(text: str) -> str:
+    """意图识别模型的思维链片段（区别于回答生成的 reasoning 事件，前端分流展示）。"""
+    return sse_event("intent_reasoning", {"text": text})
+
+
 def sources(items: list[dict[str, Any]]) -> str:
     return sse_event("sources", {"sources": items})
 

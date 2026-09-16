@@ -146,8 +146,38 @@ async function loadDetail(id: string) {
 const parentChunks = computed(() => chunks.value.filter((c) => c.chunk_type === 'parent'))
 const childChunks = computed(() => chunks.value.filter((c) => c.chunk_type === 'child'))
 
-function renderMd(content: string) {
-  return md.render(content)
+// ---------- Markdown 目录（TOC） ----------
+interface TocItem {
+  level: number
+  text: string
+  id: string
+}
+
+/** 渲染 markdown 并给标题注入锚点 id，同步产出目录（渲染与目录同源同序）。 */
+const mdRendered = computed<{ html: string; toc: TocItem[] }>(() => {
+  const toc: TocItem[] = []
+  let idx = 0
+  const html = md
+    .render(mdContent.value)
+    .replace(/<h([1-6])>([^<]*)<\/h\1>/g, (_m, lv: string, text: string) => {
+      const id = `md-h-${idx++}`
+      toc.push({ level: Number(lv), text, id })
+      return `<h${lv} id="${id}">${text}</h${lv}>`
+    })
+  return { html, toc }
+})
+
+const mdToc = computed(() => mdRendered.value.toc)
+const mdHtml = computed(() => mdRendered.value.html)
+
+const mdScrollRef = ref<HTMLElement>()
+const activeHeadingId = ref('')
+
+function scrollToHeading(id: string) {
+  activeHeadingId.value = id
+  mdScrollRef.value
+    ?.querySelector(`#${id}`)
+    ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 // ---------- 切片内容弹窗 ----------
@@ -237,19 +267,46 @@ onUnmounted(() => {
       :title="previewDoc?.doc_name"
       fullscreen
       destroy-on-close
+      class="preview-dialog"
     >
-      <el-tabs v-model="previewTab">
+      <el-tabs v-model="previewTab" class="preview-tabs">
         <el-tab-pane label="Word 预览" name="word">
-          <div v-if="previewDoc" class="h-[60vh] overflow-hidden rounded-lg border border-muted">
+          <div v-if="previewDoc" class="h-full overflow-hidden rounded-lg border border-muted">
             <iframe :src="previewUrl(previewDoc.id)" class="h-full w-full" />
           </div>
         </el-tab-pane>
         <el-tab-pane label="Markdown" name="md">
-          <div
-            v-loading="loadingDetail"
-            class="md-body max-h-[60vh] overflow-y-auto rounded-lg border border-muted p-4"
-            v-html="renderMd(mdContent)"
-          />
+          <div v-loading="loadingDetail" class="flex h-full gap-3">
+            <!-- 目录侧边栏 -->
+            <aside
+              v-if="mdToc.length"
+              class="w-52 shrink-0 overflow-y-auto rounded-lg border border-muted bg-white/60 p-2"
+            >
+              <div class="mb-1 px-1 text-[12px] font-medium text-ink-sub">目录</div>
+              <button
+                v-for="t in mdToc"
+                :key="t.id"
+                class="block w-full cursor-pointer truncate rounded px-1.5 py-1 text-left text-[12px] transition-colors"
+                :class="
+                  activeHeadingId === t.id
+                    ? 'bg-primary/10 font-medium text-primary'
+                    : 'text-ink-sub hover:bg-muted hover:text-primary'
+                "
+                :style="{ paddingLeft: `${(t.level - 1) * 10 + 6}px` }"
+                :title="t.text"
+                @click="scrollToHeading(t.id)"
+              >
+                {{ t.text }}
+              </button>
+            </aside>
+
+            <!-- 正文（标题带锚点 id，供目录跳转） -->
+            <div
+              ref="mdScrollRef"
+              class="md-body h-full min-w-0 flex-1 overflow-y-auto rounded-lg border border-muted p-4"
+              v-html="mdHtml"
+            />
+          </div>
         </el-tab-pane>
         <el-tab-pane label="切片列表" name="chunks">
           <div v-loading="loadingDetail" class="space-y-4">
@@ -305,3 +362,23 @@ onUnmounted(() => {
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+/* 全屏预览弹窗：内容区撑满剩余高度（减去 dialog 头与 tabs 头） */
+:global(.preview-dialog .el-dialog__body) {
+  height: calc(100vh - 110px);
+  overflow: hidden;
+}
+:global(.preview-tabs) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+:global(.preview-tabs .el-tabs__content) {
+  flex: 1;
+  overflow: hidden;
+}
+:global(.preview-tabs .el-tab-pane) {
+  height: 100%;
+}
+</style>

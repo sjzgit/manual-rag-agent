@@ -111,7 +111,11 @@ function submitDislike() {
   <div v-else class="msg-enter flex justify-start">
     <div class="w-full max-w-[85%]">
       <div class="glass rounded-2xl rounded-tl-sm px-4 py-3.5">
-        <StepPanel :steps="message.steps" :streaming="message.streaming" />
+        <StepPanel
+          :steps="message.steps"
+          :streaming="message.streaming"
+          :intent-reasoning="message.intentReasoning"
+        />
 
         <div v-if="message.reasoning" class="mb-2 rounded-lg border border-muted/60 bg-muted/30">
           <button

@@ -9,6 +9,8 @@ export interface StreamHandlers {
   onClarify?: (payload: NonNullable<ChatMessage['clarify']>) => void
   onToken?: (text: string) => void
   onReasoning?: (text: string) => void
+  /** 意图识别模型的思维链片段（区别于回答生成的 reasoning，实时过程可视化） */
+  onIntentReasoning?: (text: string) => void
   onSources?: (sources: ChatMessage['sources']) => void
   onDone?: (messageId: string) => void
   onError?: (code: string, message: string) => void
@@ -65,6 +67,9 @@ export async function streamChat(
         break
       case 'reasoning':
         handlers.onReasoning?.(data.text)
+        break
+      case 'intent_reasoning':
+        handlers.onIntentReasoning?.(data.text)
         break
       case 'sources':
         handlers.onSources?.(data.sources)

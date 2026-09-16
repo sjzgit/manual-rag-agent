@@ -68,6 +68,7 @@ export const useChatStore = defineStore('chat', () => {
       steps: [],
       sources: [],
       reasoning: '',
+      intentReasoning: '',
       streaming: true,
       feedback: 0,
     })
@@ -92,7 +93,11 @@ export const useChatStore = defineStore('chat', () => {
             // 后端用户消息 id 采用「assistant id + _u」确定性后缀，据此对齐真实 id
             userMsg.id = `${mid}_u`
           },
-          onStep: (s) => aiMsg.steps.push(s),
+          onStep: (s) => {
+            // 「意图识别完成」step 携带思维链全文（落库形态）：接管展示并清空实时暂存
+            if (s.detail?.reasoning) aiMsg.intentReasoning = ''
+            aiMsg.steps.push(s)
+          },
           onClarify: (c) => {
             aiMsg.clarify = c
           },
@@ -101,6 +106,9 @@ export const useChatStore = defineStore('chat', () => {
           },
           onReasoning: (t) => {
             aiMsg.reasoning = (aiMsg.reasoning ?? '') + t
+          },
+          onIntentReasoning: (t) => {
+            aiMsg.intentReasoning = (aiMsg.intentReasoning ?? '') + t
           },
           onSources: (s) => {
             aiMsg.sources = s

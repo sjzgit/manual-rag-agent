@@ -1,6 +1,6 @@
 """主 LLM 流式客户端：OpenAI 兼容接口（DeepSeek 默认，配置可切换）。
 
-Generic 模式：chat_service 组装好 system+上下文+历史后直接流式调用；
+Generic 模式：chat_service 组装好固定 system + 历史后直接流式调用（检索上下文附在末条 user 消息）；
 Agentic 模式（第5步）：search_manual 注册为 AgentScope ReAct 工具，见 services/agent_runner。
 """
 import json

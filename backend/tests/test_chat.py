@@ -17,6 +17,39 @@ def make_hit(chunk_id="c1", doc="手册A", path="模块 > 功能", score=0.9) ->
     return SearchResult(chunk_id=chunk_id, content="内容", doc=doc, path=path, score=score)
 
 
+def set_intent_batch(recognizer, batch) -> None:
+    """把识别结果注入 mock：recognize_stream 直接产出 result（无思维链流）。
+
+    需要模拟思维链实时流时用 set_intent_stream。
+    注意：side_effect 工厂保证每次调用都产出全新 generator（async generator 不可重复消费，
+    同一测试多次 handle_chat 时必须如此）。
+    """
+
+    def make_gen():
+        async def gen():
+            yield ("result", batch)
+
+        return gen()
+
+    recognizer.recognize_stream = MagicMock(side_effect=lambda *a, **k: make_gen())
+
+
+def set_intent_stream(recognizer, items: list) -> None:
+    """注入完整 recognize_stream 产出序列（如 [("reasoning", "…"), ("result", batch)]）。
+
+    每次调用产出全新 generator（同 set_intent_batch）。
+    """
+
+    def make_gen():
+        async def gen():
+            for item in items:
+                yield item
+
+        return gen()
+
+    recognizer.recognize_stream = MagicMock(side_effect=lambda *a, **k: make_gen())
+
+
 @pytest.fixture
 def service():
     settings = get_settings()
@@ -75,9 +108,7 @@ async def test_precise_flow(service):
     svc, recognizer, _ = service
     from app.intent.models import IntentBatch
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=False)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=False))
     events = await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
 
     types = [e for e, _ in events]
@@ -87,6 +118,108 @@ async def test_precise_flow(service):
     src = next(d for e, d in events if e == "sources")["sources"][0]
     assert src["doc"] == "手册A"
     assert src["images"] == ["/api/images/手册A/x.png"]
+
+
+@pytest.mark.asyncio
+async def test_intent_step_reasoning(service):
+    """【意图思维链-下发】意图识别的 LLM 思维链随「意图识别完成」step detail 下发。
+
+    场景：意图小模型为 reasoning 模型，llm_calls 最后一次调用带 reasoning。
+    前置：mock recognize 返回 IntentBatch（used_llm=True，llm_calls 两次调用：
+          第一次无 reasoning（普通输出），第二次带 "思考中…"）。
+    期望：
+      1. 「意图识别完成」step 的 detail.reasoning 为最后一条带 reasoning 的调用内容
+         （倒序取第一条非空，重试场景以最终成功的调用为准）；
+      2. steps 同时收集到内存列表（随 assistant 消息落库，历史回看共用同结构）。
+    """
+    svc, recognizer, _ = service
+    from app.intent.models import IntentBatch
+
+    set_intent_batch(recognizer, IntentBatch(
+            intents=[make_intent()],
+            used_llm=True,
+            llm_calls=[
+                {"system_prompt": "s", "messages": [], "output": "坏输出", "reasoning": ""},
+                {
+                    "system_prompt": "s", "messages": [], "output": "{}",
+                    "reasoning": "思考中…",
+                },
+            ],
+        ))
+    events = await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
+
+    detail = next(
+        d
+        for e, d in events
+        if e == "step" and d.get("title") == "意图识别完成"
+    )
+    assert detail["detail"]["reasoning"] == "思考中…"
+
+
+@pytest.mark.asyncio
+async def test_intent_reasoning_stream_events(service):
+    """【意图思维链-实时流】识别进行中思维链逐段实时下发，先于「意图识别完成」step。
+
+    场景：reasoning 模型识别，recognize_stream 先产出两段思维链再产出 result。
+    前置：set_intent_stream 注入 [("reasoning", "用户在问"), ("reasoning", "会议室"), ("result", batch)]。
+    期望：
+      1. SSE 事件序列含两个 intent_reasoning 事件，文本与片段一一对应（非拼接全文）；
+      2. 所有 intent_reasoning 事件先于「意图识别完成」step（实时性）；
+      3. 回答生成的 reasoning 事件不受影响（意图与回答思维链分流，不混流）。
+    """
+    svc, recognizer, _ = service
+    from app.intent.models import IntentBatch
+
+    set_intent_stream(
+        recognizer,
+        [
+            ("reasoning", "用户在问"),
+            ("reasoning", "会议室"),
+            ("result", IntentBatch(
+                intents=[make_intent()],
+                used_llm=True,
+                llm_calls=[
+                    {"system_prompt": "s", "messages": [], "output": "{}",
+                     "reasoning": "用户在问会议室"},
+                ],
+            )),
+        ],
+    )
+    events = await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
+
+    reasoning_events = [d["text"] for e, d in events if e == "intent_reasoning"]
+    assert reasoning_events == ["用户在问", "会议室"]
+
+    # 实时性：思维链先于「意图识别完成」step
+    intent_done_idx = next(
+        i for i, (e, d) in enumerate(events)
+        if e == "step" and d.get("title") == "意图识别完成"
+    )
+    reasoning_idxs = [i for i, (e, _) in enumerate(events) if e == "intent_reasoning"]
+    assert reasoning_idxs and all(i < intent_done_idx for i in reasoning_idxs)
+
+
+@pytest.mark.asyncio
+async def test_intent_step_reasoning_omitted_when_absent(service):
+    """【意图思维链-无值省略】无思维链（规则降级/普通模型）时 detail 不带 reasoning 字段。
+
+    场景：规则降级路径（used_llm=False），llm_calls 为空。
+    期望：「意图识别完成」step detail 仍有 used_llm/intents，但无 reasoning 键
+          （前端 v-if 判断，空字段不下发保持 detail 干净）。
+    """
+    svc, recognizer, _ = service
+    from app.intent.models import IntentBatch
+
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=False))
+    events = await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
+
+    detail = next(
+        d
+        for e, d in events
+        if e == "step" and d.get("title") == "意图识别完成"
+    )
+    assert "reasoning" not in detail["detail"]
+    assert detail["detail"]["used_llm"] is False
 
 
 @pytest.mark.asyncio
@@ -102,9 +235,7 @@ async def test_irrelevant_reject(service):
     svc, recognizer, _ = service
     from app.intent.models import IntentBatch
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent("irrelevant")], used_llm=False)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent("irrelevant")], used_llm=False))
     events = await collect_events(svc.handle_chat(ChatRequest(question="今天天气如何")))
 
     texts = "".join(d["text"] for e, d in events if e == "token")
@@ -123,9 +254,7 @@ async def test_not_found(service):
     svc, recognizer, retriever = service
     from app.intent.models import IntentBatch
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=False)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=False))
     retriever.search_and_rerank = AsyncMock(
         return_value=HybridSearchOutcome(mode="dense")
     )
@@ -151,12 +280,10 @@ async def test_clarify_flow(service):
     from app.intent.models import IntentBatch
 
     # 第一轮：模糊 → clarify 事件
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(
+    set_intent_batch(recognizer, IntentBatch(
             intents=[make_intent("vague", module="")],
             used_llm=False,
-        )
-    )
+        ))
     events = await collect_events(
         svc.handle_chat(ChatRequest(session_id="s1", question="角色权限有哪些？"))
     )
@@ -166,9 +293,7 @@ async def test_clarify_flow(service):
     assert not any(e == "token" for e, _ in events)
 
     # 第二轮：用户补充 → 合并后精确 → 正常回答
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=False)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=False))
     events = await collect_events(
         svc.handle_chat(
             ChatRequest(session_id="s1", question="", clarify_answer="上体附中系统")
@@ -189,11 +314,9 @@ async def test_clarify_max_rounds(service):
     svc, recognizer, _ = service
     from app.intent.models import IntentBatch
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(
+    set_intent_batch(recognizer, IntentBatch(
             intents=[make_intent("vague")], used_llm=False
-        )
-    )
+        ))
     sid = "s-max"
     # 填满澄清轮次
     for _ in range(3):
@@ -230,9 +353,7 @@ async def test_steps_persisted(service):
     sessions.get_memory_docs = AsyncMock(return_value=[])
     svc.sessions = sessions
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=False)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=False))
     await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
 
     assistant_calls = [
@@ -282,9 +403,7 @@ async def test_hybrid_step_detail_and_log_mode(service):
     sessions.get_memory_docs = AsyncMock(return_value=[])
     svc.sessions = sessions
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=False)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=False))
     events = await collect_events(svc.handle_chat(ChatRequest(question="实验会议室预约")))
 
     retrieve_steps = [
@@ -336,9 +455,7 @@ async def test_dense_mode_logs_only_final_stage(service):
     sessions.get_memory_docs = AsyncMock(return_value=[])
     svc.sessions = sessions
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=False)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=False))
     await collect_events(svc.handle_chat(ChatRequest(question="重置学生卡")))
 
     stages = [
@@ -361,9 +478,7 @@ async def test_rerank_failure_stream_still_answers(service):
             mode="hybrid", dense_hits=[degraded], final_hits=[degraded]
         )
     )
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=False)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=False))
     events = await collect_events(svc.handle_chat(ChatRequest(question="重置学生卡")))
     assert not any(e == "error" for e, _ in events)
     assert any(e == "sources" for e, _ in events)
@@ -408,16 +523,81 @@ async def test_answer_flow_passes_history_to_llm(service):
 
     svc.agent.stream_answer = fake_stream
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=False)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=False))
     await collect_events(svc.handle_chat(ChatRequest(question="审批流程呢？")))
 
     msgs = captured_messages["messages"]
     # 历史应含前两轮（user + assistant），当前问题放在最后
     assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
     assert msgs[0]["content"] == "实验会议室怎么预约？"
-    assert msgs[-1]["content"] == "审批流程呢？"
+    # 末条 user 消息 = 当前问题 + 参考切片（检索上下文与用户输入同条消息，system 保持固定）
+    assert msgs[-1]["content"] == "审批流程呢？\n\n【参考切片】\n上下文"
+
+
+@pytest.mark.asyncio
+async def test_answer_context_in_user_message_not_system(service):
+    """【生成-上下文缓存组织】检索上下文放在末条 user 消息，system 保持固定不变。
+
+    场景：精确意图走 generic 生成路径，mock 检索返回 1 条命中、build_context 产出"上下文"。
+    前置：捕获 stream_answer 收到的 (system, messages)。
+    期望：
+      1. system 为固定提示词（answer_system 默认模板），不含检索上下文、
+         不含 {context} 占位符残留——每次调用 system 前缀稳定，利于命中 LLM prompt 缓存；
+      2. 检索上下文（"上下文"）只出现在末条 user 消息中，且以【参考切片】节标题
+         拼在用户问题之后（问题在前、切片在后）；
+      3. 历史 user/assistant 消息内容原样透传，不被追加切片（历史前缀同样稳定）。
+    """
+    svc, recognizer, retriever = service
+    from app.intent.models import IntentBatch
+
+    hit = make_hit()
+    hit.dense_score = 0.9
+    retriever.search_and_rerank = AsyncMock(
+        return_value=HybridSearchOutcome(mode="dense", dense_hits=[hit], final_hits=[hit])
+    )
+
+    sessions = MagicMock()
+    sessions.ensure_session = AsyncMock()
+    sessions.save_message = AsyncMock()
+    sessions.log_intents = AsyncMock()
+    sessions.log_retrievals = AsyncMock()
+    sessions.log_llm_call = AsyncMock()
+    sessions.get_clarify_state = AsyncMock(return_value=None)
+    sessions.save_clarify_state = AsyncMock()
+    sessions.get_memory_docs = AsyncMock(return_value=[])
+    sessions.get_messages = AsyncMock(
+        return_value=[
+            {"id": "m1", "role": "user", "content": "历史问题", "sources": [], "steps": [], "created_at": "t1"},
+            {"id": "m2", "role": "assistant", "content": "历史回答", "sources": [], "steps": [], "created_at": "t2"},
+        ]
+    )
+    svc.sessions = sessions
+
+    captured = {}
+
+    async def fake_stream(system, messages):
+        captured["system"] = system
+        captured["messages"] = messages
+        yield ("content", "回答")
+
+    svc.agent.stream_answer = fake_stream
+
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=False))
+    await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
+
+    # system 固定：不含上下文、无占位符残留
+    assert "上下文" not in captured["system"]
+    assert "{context}" not in captured["system"]
+
+    # 上下文只进末条 user 消息，问题在前、切片在后
+    msgs = captured["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+    assert msgs[-1]["content"].startswith("如何重置学生卡\n\n【参考切片】\n")
+    assert msgs[-1]["content"].endswith("上下文")
+
+    # 历史消息原样透传，不追加切片
+    assert msgs[0]["content"] == "历史问题"
+    assert msgs[1]["content"] == "历史回答"
 
 
 @pytest.mark.asyncio
@@ -467,9 +647,7 @@ async def test_memory_scope_first_then_global_on_low_score(service):
         ),
     ])
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=True)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=True))
     events = await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
 
     assert retriever.search_and_rerank.await_count == 2
@@ -532,9 +710,7 @@ async def test_memory_scope_hit_uses_memory_result(service):
         )
     )
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=True)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=True))
     events = await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
 
     assert retriever.search_and_rerank.await_count == 1
@@ -583,9 +759,7 @@ async def test_memory_scope_switch_off(service, monkeypatch):
     knowledge.get_document = AsyncMock(return_value={"doc_name": "手册A"})
     svc.knowledge_service = knowledge
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=False)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=False))
     await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
 
     sessions.get_memory_docs.assert_not_awaited()
@@ -620,9 +794,7 @@ async def test_memory_scope_all_doc_ids_invalid(service):
     knowledge.get_document = AsyncMock(return_value=None)
     svc.knowledge_service = knowledge
 
-    recognizer.recognize = AsyncMock(
-        return_value=IntentBatch(intents=[make_intent()], used_llm=True)
-    )
+    set_intent_batch(recognizer, IntentBatch(intents=[make_intent()], used_llm=True))
     events = await collect_events(svc.handle_chat(ChatRequest(question="如何重置学生卡")))
 
     assert retriever.search_and_rerank.await_count == 1

@@ -6,6 +6,7 @@ LLM 输出 JSON 后的校验流程（见 chat/意图识别/改为prompt.md）：
 """
 import json
 import re
+from collections.abc import AsyncGenerator
 
 import httpx
 
@@ -48,7 +49,7 @@ class IntentRecognizer:
         question: str,
         history: list[dict] | None = None,
     ) -> IntentBatch:
-        """识别用户输入，返回逐子问题的意图结果。
+        """识别用户输入，返回逐子问题的意图结果（非流式语义包装，供测试等调用方使用）。
 
         参数:
             question: 用户当前输入
@@ -56,9 +57,85 @@ class IntentRecognizer:
                 用于结合上下文识别：当前输入为指代/承接/省略模块时，
                 依据历史最近确定的模块补全，避免误判为无关或模糊。
         """
-        if self.settings.intent_llm_configured:
-            return await self._recognize_by_llm(question, history=history)
-        return self._recognize_by_rules(question, history=history)
+        if not self.settings.intent_llm_configured:
+            return self._recognize_by_rules(question, history=history)
+        async for kind, payload in self.recognize_stream(question, history=history):
+            if kind == "result":
+                return payload
+        raise RuntimeError("recognize_stream 未产出 result")  # pragma: no cover
+
+    async def recognize_stream(
+        self,
+        question: str,
+        history: list[dict] | None = None,
+    ) -> AsyncGenerator[tuple[str, object], None]:
+        """流式意图识别：reasoning 模型的思维链逐段实时 yield，供 C 端过程可视化。
+
+        yield ("reasoning", text)：思维链片段（实时推送，含重试分隔提示）；
+        yield ("result", IntentBatch)：最终识别结果（必然作为最后一个 yield 产出）。
+
+        规则降级路径无 LLM 调用，直接 yield result。
+        """
+        if not self.settings.intent_llm_configured:
+            yield ("result", self._recognize_by_rules(question, history=history))
+            return
+
+        llm_calls: list[dict] = []
+        last_error = ""
+        for attempt in (1, 2):
+            system = self._intent_prompt()
+            messages = self._build_messages(system, question, history)
+            reasoning_parts: list[str] = []
+            content_parts: list[str] = []
+            async for kind, text in self._chat_stream(
+                system, question, json_mode=True, history=history
+            ):
+                if kind == "reasoning":
+                    reasoning_parts.append(text)
+                    yield ("reasoning", text)
+                else:
+                    content_parts.append(text)
+            raw = "".join(content_parts)
+            llm_calls.append(
+                {
+                    "system_prompt": system,
+                    "messages": messages,
+                    "output": raw,
+                    "reasoning": "".join(reasoning_parts),
+                }
+            )
+            try:
+                intents = self._parse_intents(raw, question)
+                yield (
+                    "result",
+                    IntentBatch(intents=intents, used_llm=True, llm_calls=llm_calls),
+                )
+                return
+            except ValueError as e:
+                last_error = str(e)
+                logger.warning(
+                    "intent_json_invalid", attempt=attempt, error=last_error, raw=raw[:200]
+                )
+                # 重试的思维链会重新流出，给前端一个分隔提示避免两段拼接混淆
+                yield ("reasoning", "\n\n——输出解析失败，自动重试——\n\n")
+        logger.warning("intent_json_retry_exhausted", question=question[:100])
+        yield (
+            "result",
+            IntentBatch(
+                intents=[
+                    IntentResult(
+                        input=question,
+                        simple_input=question,
+                        intent_type="vague",
+                        missing_fields=["module", "description"],
+                        clarify_question=_PARSE_FAILED_CLARIFY,
+                        intent_reason=f"意图识别输出两次均无法解析（{last_error}），转澄清",
+                    )
+                ],
+                used_llm=True,
+                llm_calls=llm_calls,
+            ),
+        )
 
     async def generate_clarify_question(self, intents: list[IntentResult]) -> str:
         """根据模糊意图生成追问内容。
@@ -73,59 +150,13 @@ class IntentRecognizer:
 
     # ---------- 小模型路径 ----------
 
-    async def _recognize_by_llm(
-        self,
-        question: str,
-        history: list[dict] | None = None,
-    ) -> IntentBatch:
-        """LLM 识别意图。history 作为多轮消息注入，让模型结合上下文
-        补全指代（如"那审批流程呢"）与省略的模块要素。
-
-        输出校验：解析失败 → 重试一次 → 仍失败判 vague。
-        """
-        llm_calls: list[dict] = []
-        last_error = ""
-        for attempt in (1, 2):
-            system = self._intent_prompt()
-            raw, messages = await self._chat(
-                system, question, json_mode=True, history=history
-            )
-            llm_calls.append(
-                {"system_prompt": system, "messages": messages, "output": raw}
-            )
-            try:
-                intents = self._parse_intents(raw, question)
-                return IntentBatch(intents=intents, used_llm=True, llm_calls=llm_calls)
-            except ValueError as e:
-                last_error = str(e)
-                logger.warning(
-                    "intent_json_invalid", attempt=attempt, error=last_error, raw=raw[:200]
-                )
-        logger.warning("intent_json_retry_exhausted", question=question[:100])
-        return IntentBatch(
-            intents=[
-                IntentResult(
-                    input=question,
-                    simple_input=question,
-                    intent_type="vague",
-                    missing_fields=["module", "description"],
-                    clarify_question=_PARSE_FAILED_CLARIFY,
-                    intent_reason=f"意图识别输出两次均无法解析（{last_error}），转澄清",
-                )
-            ],
-            used_llm=True,
-            llm_calls=llm_calls,
-        )
-
-    async def _chat(
-        self,
+    @staticmethod
+    def _build_messages(
         system: str,
         user: str,
-        json_mode: bool = False,
-        max_tokens: int | None = None,
         history: list[dict] | None = None,
-    ) -> tuple[str, list[dict]]:
-        s = self.settings
+    ) -> list[dict]:
+        """组装多轮 messages：system + 全部历史（按正序，不截断）+ 当前问题收尾。"""
         messages: list[dict] = [{"role": "system", "content": system}]
         if history:
             # 注入全部历史（按正序），当前问题置于最后；暂不截断，上下文管理后续处理
@@ -135,12 +166,29 @@ class IntentRecognizer:
                 if role in ("user", "assistant") and content:
                     messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user})
+        return messages
+
+    async def _chat_stream(
+        self,
+        system: str,
+        user: str,
+        json_mode: bool = False,
+        max_tokens: int | None = None,
+        history: list[dict] | None = None,
+    ) -> AsyncGenerator[tuple[str, str], None]:
+        """流式调用意图小模型：逐段 yield ("reasoning", text) / ("content", text)。
+
+        思维链实时抛出供 C 端过程可视化；content 由调用方拼接为完整 JSON 输出。
+        非 reasoning 模型无 reasoning 段，只有 content 流。
+        """
+        s = self.settings
+        messages = self._build_messages(system, user, history)
         payload: dict = {
             "model": s.intent_llm_model,
             "messages": messages,
             "temperature": s.intent_llm_temperature,
             "max_tokens": max_tokens or s.intent_llm_max_tokens,
-            "stream": False,
+            "stream": True,
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
@@ -148,10 +196,25 @@ class IntentRecognizer:
         url = f"{s.intent_llm_base_url.rstrip('/')}/chat/completions"
         headers = {"Authorization": f"Bearer {s.intent_llm_api_key}"}
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-        return data["choices"][0]["message"]["content"] or "", messages
+            async with client.stream("POST", url, json=payload, headers=headers) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0].get("delta", {})
+                        rc = delta.get("reasoning_content")
+                        if rc:
+                            yield ("reasoning", rc)
+                        text = delta.get("content")
+                        if text:
+                            yield ("content", text)
+                    except (ValueError, KeyError, IndexError):
+                        continue
 
     def _parse_intents(self, raw: str, question: str) -> list[IntentResult]:
         """校验并解析小模型 JSON 输出；无法解析时抛 ValueError（由上层重试）。"""

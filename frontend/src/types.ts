@@ -29,6 +29,8 @@ export interface StepEvent {
   type: 'intent' | 'retrieve' | 'thinking' | 'tool_call'
   title: string
   detail: Record<string, any> & {
+    /** intent step 扩展：意图识别模型的思维链（reasoning 模型才有） */
+    reasoning?: string
     /** retrieve step 扩展：检索模式与命中列表 */
     mode?: 'dense' | 'hybrid' | 'hybrid-rerank'
     hits?: RetrieveHit[]
@@ -57,6 +59,8 @@ export interface ChatMessage {
   steps: StepEvent[]
   sources: SourceChunk[]
   reasoning?: string
+  /** 意图识别思维链的实时暂存（流式期间展示；「意图识别完成」step 到达后由 steps detail 接管并清空） */
+  intentReasoning?: string
   clarify?: ClarifyPayload
   streaming?: boolean
   feedback?: 1 | -1 | 0

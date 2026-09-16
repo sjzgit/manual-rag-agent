@@ -4,8 +4,23 @@ import { Brain, ChevronDown, Search, Sparkles, Wrench } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import type { IntentResult, StepEvent } from '../types'
 
-const props = defineProps<{ steps: StepEvent[]; streaming?: boolean }>()
+const props = defineProps<{
+  steps: StepEvent[]
+  streaming?: boolean
+  /** 意图识别思维链的实时流（识别进行中）；「意图识别完成」step 到达后由 detail.reasoning 接管 */
+  intentReasoning?: string
+}>()
 const expanded = ref(false)
+// 意图识别思维链折叠（reasoning 模型的思考过程，默认收起）
+const showIntentReasoning = ref(false)
+
+// 实时思维链到达时确保整体面板展开可见
+watch(
+  () => props.intentReasoning,
+  (v) => {
+    if (v) expanded.value = true
+  },
+)
 
 // 流式生成时自动展开，完成后自动收起
 watch(
@@ -102,6 +117,46 @@ function hits(step: StepEvent) {
               <span v-if="it.description" class="rounded bg-white px-1.5 py-0.5">{{ it.description }}</span>
             </div>
             <div v-if="it.intent_reason" class="mt-1 text-ink-sub/80">{{ it.intent_reason }}</div>
+          </div>
+
+          <!-- 意图识别思维链实时流（识别进行中，展开滚动显示；完成后由 detail.reasoning 折叠块接管） -->
+          <div
+            v-if="s.type === 'intent' && intentReasoning && i === steps.length - 1"
+            class="mt-1.5 rounded-lg border border-muted/60 bg-muted/30 px-3 py-2"
+          >
+            <div class="flex items-center gap-1.5 text-[12px] font-medium text-ink-sub">
+              <Brain :size="13" class="text-primary/70" />
+              <span>意图识别思考过程</span>
+              <span class="text-[11px] text-ink-sub/50">识别中…</span>
+            </div>
+            <div class="mt-2 whitespace-pre-wrap border-t border-muted/60 pt-2 text-[12px] leading-5 text-ink-sub/80">
+              {{ intentReasoning }}
+            </div>
+          </div>
+
+          <!-- 意图识别思维链（识别完成后的落库形态，默认收起；历史回看同此渲染） -->
+          <div
+            v-if="s.detail?.reasoning"
+            class="rounded-lg border border-muted/60 bg-muted/30 px-3 py-2"
+          >
+            <button
+              class="flex w-full items-center gap-1.5 text-[12px] font-medium text-ink-sub transition-colors hover:text-ink cursor-pointer"
+              @click="showIntentReasoning = !showIntentReasoning"
+            >
+              <Brain :size="13" class="text-primary/70" />
+              <span>意图识别思考过程</span>
+              <ChevronDown
+                :size="13"
+                class="ml-auto transition-transform duration-200"
+                :class="{ 'rotate-180': showIntentReasoning }"
+              />
+            </button>
+            <div
+              v-if="showIntentReasoning"
+              class="mt-2 whitespace-pre-wrap border-t border-muted/60 pt-2 text-[12px] leading-5 text-ink-sub/80"
+            >
+              {{ s.detail.reasoning }}
+            </div>
           </div>
         </div>
 

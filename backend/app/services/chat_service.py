@@ -106,22 +106,33 @@ class ChatService:
             # 开关关闭时不读取，等同纯全库检索；记忆仍会在检索作答后持续累积。
             memory_doc_names = await self._memory_doc_names(session_id)
 
-            # 1) 意图识别（结合会话上下文：指代/承接性提问根据历史补全模块）
+            # 1) 意图识别（结合会话上下文：指代/承接性提问根据历史补全模块）；
+            #    流式消费：reasoning 模型的思维链逐段实时下发（intent_reasoning 事件）
             yield _step_payload(steps, "intent", "意图识别中…")
             history = await self._history(session_id)
             # 刚保存的当前输入不视为"历史"，移除避免自我参照
             if history and history[-1]["role"] == "user":
                 history = history[:-1]
-            batch = await self.recognizer.recognize(question, history=history)
-            yield _step_payload(
-                steps,
-                "intent",
-                "意图识别完成",
-                {
-                    "used_llm": batch.used_llm,
-                    "intents": [i.model_dump() for i in batch.intents],
-                },
+            batch = None
+            async for kind, payload in self.recognizer.recognize_stream(
+                question, history=history
+            ):
+                if kind == "reasoning":
+                    yield sse.intent_reasoning(payload)
+                elif kind == "result":
+                    batch = payload
+            intent_detail = {
+                "used_llm": batch.used_llm,
+                "intents": [i.model_dump() for i in batch.intents],
+            }
+            # 意图识别思维链全文随「完成」step 落库（实时流已下发，此处供历史回看）
+            intent_reasoning = next(
+                (c.get("reasoning", "") for c in reversed(batch.llm_calls) if c.get("reasoning")),
+                "",
             )
+            if intent_reasoning:
+                intent_detail["reasoning"] = intent_reasoning
+            yield _step_payload(steps, "intent", "意图识别完成", intent_detail)
             if self.sessions:
                 await self.sessions.log_intents(session_id, message_id, batch)
                 for call in batch.llm_calls:
@@ -317,7 +328,7 @@ class ChatService:
             yield sse.sources(source_dicts)
             yield sse.done(message_id)
         else:
-            # Generic 模式：固定注入检索上下文 + 会话历史
+            # Generic 模式：检索上下文附在末条 user 消息（system 固定，见 _generate_generic）
             context = self.retriever.build_context(all_hits)
             source_chunks = [self.retriever.to_source_chunk(h) for h in all_hits]
             async for chunk in self._generate_generic(
@@ -342,16 +353,19 @@ class ChatService:
         source_chunks: list[SourceChunk],
         prefix: str = "",
     ) -> AsyncGenerator[str]:
-        """Generic 模式：固定注入检索上下文 + 会话历史，流式生成并落库。"""
+        """Generic 模式：system 固定 + 检索上下文附在末条 user 消息，流式生成并落库。
+
+        上下文缓存友好：system 与历史消息不随请求变化，每次变化的只有末条
+        user 消息（用户输入 + 参考切片），前缀稳定可命中 LLM 提供方的 prompt 缓存。
+        """
         yield _step_payload(steps, "thinking", "生成回答中…")
         full_text = prefix
         reasoning_text = ""
         if prefix:
             yield sse.token(prefix)
-        system = self._prompt("answer_system", ANSWER_SYSTEM_PROMPT).format(
-            context=context
-        )
-        messages = [*(history or []), {"role": "user", "content": question}]
+        system = self._prompt("answer_system", ANSWER_SYSTEM_PROMPT)
+        user_content = f"{question}\n\n【参考切片】\n{context}"
+        messages = [*(history or []), {"role": "user", "content": user_content}]
         async for kind, text in self.agent.stream_answer(system, messages):
             if kind == "reasoning":
                 reasoning_text += text
