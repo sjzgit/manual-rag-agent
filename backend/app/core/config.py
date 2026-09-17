@@ -102,6 +102,14 @@ class Settings(BaseSettings):
     # ---- 管理端 ----
     admin_token: str = ""
 
+    # ---- MCP 服务（独立进程，python -m app.mcp） ----
+    mcp_host: str = "0.0.0.0"
+    mcp_port: int = 8302
+    mcp_path: str = "/mcp"  # Streamable HTTP 端点路径
+    mcp_stateless: bool = True  # 每请求独立传输，无会话亲和，适配多智能体并发
+    mcp_api_key: str = ""  # 留空 = 不鉴权；非空时要求 X-API-Key 或 Authorization: Bearer
+    mcp_public_base_url: str = ""  # 留空 = 来源图片保持 /api/images 相对路径；配置后改写为绝对 URL
+
     @property
     def mysql_dsn(self) -> str:
         return (

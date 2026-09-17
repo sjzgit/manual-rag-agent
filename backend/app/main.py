@@ -1,11 +1,9 @@
-"""FastAPI 入口：lifespan 初始化全局单例，注册路由。"""
-import os
+"""FastAPI 入口：lifespan 挂载全局单例，注册路由。单例初始化统一走 core/bootstrap.py。"""
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agent.manual_agent import ManualAnswerAgent
 from app.api import admin as admin_api
 from app.api import admin_feedback as admin_feedback_api
 from app.api import admin_kb as admin_kb_api
@@ -14,102 +12,30 @@ from app.api import admin_session as admin_session_api
 from app.api import chat as chat_api
 from app.api import feedback as feedback_api
 from app.api import images as images_api
+from app.core.bootstrap import init_services
 from app.core.config import get_settings
-from app.core.logging import get_logger, setup_logging
-from app.db.session import Database
-from app.intent.recognizer import IntentRecognizer
-from app.rag import retriever as retriever_module
-from app.rag.reranker import SiliconFlowReranker
-from app.rag.retriever import ManualRetriever
-from app.services.cache import RedisService
-from app.services.chat_service import ChatService
-from app.services.feedback_service import FeedbackService
-from app.services.knowledge_service import KnowledgeService
-from app.services.prompt_service import PromptService
-from app.services.session_service import SessionService
+from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
-    if settings.hf_offline:
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    setup_logging(settings.debug)
-    app.state.settings = settings
-
-    db = Database(settings)
-    await db.startup()
-    app.state.db = db
-    session_service = SessionService(db)
-    app.state.session_service = session_service
-
-    feedback_service = FeedbackService(db)
-    app.state.feedback_service = feedback_service
-
-    prompt_service = PromptService(db)
-    await prompt_service.startup()
-    app.state.prompt_service = prompt_service
-
-    retriever = ManualRetriever(settings, db)
-    await retriever.startup()
-    retriever_module.set_retriever(retriever)
-    app.state.retriever = retriever
-
-    reranker = SiliconFlowReranker(settings)
-    await reranker.startup()
-    app.state.reranker = reranker
-
-    knowledge = KnowledgeService(settings, db, retriever)
-    app.state.knowledge = knowledge
-
-    recognizer = IntentRecognizer(settings, prompt_service)
-    await recognizer.startup()
-    app.state.recognizer = recognizer
-
-    redis_service = RedisService(settings)
-    await redis_service.startup()
-    app.state.redis = redis_service
-
-    agent = ManualAnswerAgent(settings)
-    agentic = None
-    if settings.rag_mode == "agentic":
-        from app.services.agent_runner import AgenticRunner
-
-        agentic = AgenticRunner(settings, prompt_service)
-    app.state.chat_service = ChatService(
-        settings,
-        retriever,
-        recognizer,
-        agent,
-        session_service,
-        redis_service,
-        agentic,
-        prompt_service,
-        reranker,
-        knowledge,
-    )
-
-    logger.info(
-        "app_started",
-        rag_mode=settings.rag_mode,
-        intent_llm=settings.intent_llm_configured,
-        llm=settings.llm_configured,
-        rerank=settings.rerank_configured,
-        keyword_search=settings.enable_keyword_search,
-        mysql=db.available,
-        redis=redis_service.available,
-    )
-
-    yield
-
-    await reranker.shutdown()
-    await retriever.shutdown()
-    await db.shutdown()
-    await redis_service.shutdown()
-    logger.info("app_stopped")
+    # 服务层单例初始化与关停统一在 init_services 内（顺序见 bootstrap 模块注释）；
+    # 此处只负责把单例挂到 app.state，键名与历史版本一致，路由层零改动。
+    async with init_services() as s:
+        app.state.settings = s.settings
+        app.state.db = s.db
+        app.state.session_service = s.session_service
+        app.state.feedback_service = s.feedback_service
+        app.state.prompt_service = s.prompt_service
+        app.state.retriever = s.retriever
+        app.state.reranker = s.reranker
+        app.state.knowledge = s.knowledge
+        app.state.recognizer = s.recognizer
+        app.state.redis = s.redis_service  # 历史键名（非 redis_service）
+        app.state.chat_service = s.chat_service
+        yield
 
 
 def create_app() -> FastAPI:

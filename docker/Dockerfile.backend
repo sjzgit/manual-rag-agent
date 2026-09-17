@@ -6,12 +6,12 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     HF_ENDPOINT=https://hf-mirror.com
 
-COPY backend/requirements.txt .
-RUN pip install -r requirements.txt
-
+# 依赖唯一来源是 pyproject.toml（无 requirements.txt）；uv.lock 用于锁版本参考
+COPY backend/pyproject.toml backend/uv.lock ./
 COPY backend/app ./app
-COPY backend/pytest.ini ./
+RUN pip install --no-cache-dir .
 
 EXPOSE 8000
 
+# 默认启动 API 服务；MCP 服务由 compose 覆盖 command：python -m app.mcp（端口 8002）
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -12,6 +12,7 @@ dependencies = [
     "sentence-transformers>=3.0,<4",
     "jieba>=0.42,<0.43",
     "agentscope>=2.0.5,<2.1",
+    "mcp>=1.12,<2",
     "structlog>=24.1,<25",
     "sqlalchemy[asyncio]>=2.0,<2.1",
     "aiomysql>=0.2,<0.3",

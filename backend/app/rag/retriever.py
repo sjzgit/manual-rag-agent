@@ -13,6 +13,7 @@
 import asyncio
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import quote
@@ -558,6 +559,15 @@ class ManualRetriever:
             content=content,
             images=images,
         )
+
+    def list_docs(self) -> list[dict]:
+        """聚合父切片映射中的手册名清单（同步、零 IO）。
+
+        _parents 在 startup→reload 时从 MySQL chunks 表（失败回退 chunks.json）加载，
+        天然「有且只有可检索的手册」，MySQL 不可用时依然准确。
+        """
+        counts: Counter[str] = Counter(p["doc"] for p in self._parents.values())
+        return [{"doc": d, "parents": n} for d, n in sorted(counts.items())]
 
     def build_context(self, hits: list[SearchResult]) -> str:
         """拼接 LLM 上下文：子→父回溯、按父去重、按最终相关度降序（同分按文档序）。

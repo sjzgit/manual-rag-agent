@@ -24,6 +24,32 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # MCP 服务：与 backend 同镜像换启动命令，对外提供手册问答/检索工具（供其他智能体调用）
+  mcp:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+    container_name: manual-rag-mcp
+    command: python -m app.mcp
+    ports:
+      - "8002:8002"
+    env_file:
+      - ../backend/.env
+    environment:
+      MYSQL_HOST: mysql
+      REDIS_URL: redis://redis:6379/0
+      CHUNKS_PATH: /data/chunks/chunks.json
+      MEDIA_ROOT: /data/manuals
+    volumes:
+      - ../../文档切片:/data/chunks:ro
+      - ../../处理后的md手册文档:/data/manuals:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
   web:
     build:
       context: ..

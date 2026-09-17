@@ -24,6 +24,9 @@ cd backend
 pip install -e ".[dev]"
 uv run python -m app.main
 
+# MCP 服务（Streamable HTTP，默认端口 8002；供其他智能体调用，详见 docs/MCP服务.md）
+uv run python -m app.mcp
+
 # 前端
 cd frontend
 npm ci
@@ -53,7 +56,7 @@ api（路由/SSE，薄层） → services（编排/流水线） → intent / age
 ```
 
 - **依赖单向向下**，禁止下层 import 上层；模块间通信用显式参数传递或 pydantic 模型。
-- 全局单例在 [main.py](backend/app/main.py) `lifespan` 中初始化并挂到 `app.state`（settings / db / prompt_service / retriever / knowledge / recognizer / session_service / redis / chat_service），路由层通过 `request.app.state.xxx` 取用，**不重复实例化**。注意初始化顺序：db → prompt_service → retriever（retriever 需从 MySQL chunks 表加载父子映射）。
+- 全局单例初始化统一走 [bootstrap.py](backend/app/core/bootstrap.py) 的 `init_services()`（`Services` 容器 + asynccontextmanager 生命周期），[main.py](backend/app/main.py) `lifespan` 将其逐键挂到 `app.state`（settings / db / prompt_service / retriever / knowledge / recognizer / session_service / redis / chat_service），MCP server（`python -m app.mcp`）直接消费同一容器，**禁止另起一份初始化序列**。路由层通过 `request.app.state.xxx` 取用，**不重复实例化**。注意初始化顺序：db → prompt_service → retriever（retriever 需从 MySQL chunks 表加载父子映射）。
 - 服务无状态：会话历史每轮从 MySQL 重建（支持水平扩展）；澄清状态存 sessions.clarify_state，DB 不可用时内存兜底。
 - BGE 模型 / Milvus 连接为 `retriever` 持有的单例，知识库向量化入库复用该单例（`retriever.embed` / `retriever.upsert_children`），**不重复加载模型**。
 
@@ -69,6 +72,7 @@ code/
 │   │   ├── knowledge/    # 知识库能力：converter.py(docx→md) + chunker.py(父子切片) + models.py，纯代码非 LLM
 │   │   ├── intent/       # 意图识别：recognizer.py + models.py(IntentResult/ClarifyState)
 │   │   ├── agent/        # AgentScope Agent 工厂
+│   │   ├── mcp/          # MCP 服务封装：server.py(FastMCP 装配/鉴权中间件) + tools.py(工具实现/SSE 聚合) + models.py(出参契约)
 │   │   ├── prompts/      # Prompt 模板：一个业务域一个文件，常量导出（兼作 prompt_templates 默认值）
 │   │   ├── rag/          # retriever.py(子切片检索+父子回溯) + models.py(ChatRequest/SearchResult/SourceChunk)
 │   │   ├── services/     # 业务编排：chat_service / knowledge_service / prompt_service / session_service / cache / agent_runner
@@ -146,6 +150,7 @@ code/
 5. **澄清轮次上限** `MAX_CLARIFY_ROUNDS=3`，超限按最相关切片直接回答并提示。
 6. **父子切片检索链路**（v2.0）：Milvus 只入子切片（collection `manual_rag_child_chunks`），父切片存 MySQL `chunks` 表；检索走「子切片命中 → `child_id→parent_id` 回溯 → 按父去重 → 按 doc+chunk_index 文档序排序」；`retrieve_top_k` 默认 8；来源卡片子 path 定位 + 父 content 展示。
 7. **管理端 API**：统一前缀 `/admin/api/*`（与 SPA 页面路由 `/admin` 区分）；本期不做登录/权限。
+8. **MCP 工具契约**（[app/mcp/models.py](backend/app/mcp/models.py) ↔ [docs/MCP服务.md](docs/MCP服务.md)）：`manual_ask` 返回 status=clarify 时调用方须带 `session_id` + `clarify_answer` 重入；irrelevant/未命中返回 status=answered 且 sources=[]；改动出参模型或工具 docstring 须同步文档与 `tests/test_mcp.py`。
 
 ## 6. 红线
 
